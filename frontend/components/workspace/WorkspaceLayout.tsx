@@ -8,6 +8,7 @@ import { CentralHero } from "./CentralHero";
 import { PinoutDiagram } from "@/components/visuals/pinout/PinoutDiagram";
 import { ClockTree } from "@/components/visuals/clock-tree/ClockTree";
 import { RegisterPanel } from "@/components/visuals/registers/RegisterPanel";
+import { BreadboardView } from "@/components/visuals/breadboard/BreadboardView";
 
 interface Props {
   prompt: string;
@@ -48,7 +49,9 @@ export function WorkspaceLayout({ prompt }: Props) {
       <AgentPanel
         title="Errata · Wiring"
         agents={["errata_checker", "wokwi_diagram_generator"]}
-      />
+      >
+        <BreadboardView />
+      </AgentPanel>
       <AgentPanel
         title="Registers · Code"
         agents={["peripheral_configurator", "code_composer"]}
