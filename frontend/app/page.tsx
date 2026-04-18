@@ -1,3 +1,5 @@
+import { PromptInput } from "@/components/landing/PromptInput";
+
 export default function LandingPage() {
   return (
     <main className="min-h-screen flex items-center justify-center px-6">
@@ -25,6 +27,7 @@ export default function LandingPage() {
           A multi-agent pipeline generates C, validates against the RP2040 SVD, compiles
           with arm-gcc, and simulates in Wokwi — live.
         </p>
+        <PromptInput />
       </div>
     </main>
   );
