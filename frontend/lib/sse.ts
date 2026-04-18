@@ -1,0 +1,51 @@
+import type { SSEEvent, SSEEventType } from "@/types/sse";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+
+const EVENT_TYPES: readonly SSEEventType[] = [
+  "session_ready",
+  "agent_start",
+  "agent_reasoning",
+  "agent_complete",
+  "assign_pin",
+  "configure_clock",
+  "set_register",
+  "add_wire",
+  "errata_warning",
+  "code_chunk",
+  "code_complete",
+  "build_start",
+  "build_log",
+  "build_success",
+  "build_failure",
+  "simulate_start",
+  "simulate_output",
+  "pipeline_complete",
+  "error",
+] as const;
+
+export type SSEHandler = (event: SSEEvent) => void;
+
+export function openPipelineStream(prompt: string, onEvent: SSEHandler, sessionId?: string): EventSource {
+  const params = new URLSearchParams({ prompt });
+  if (sessionId) params.set("session_id", sessionId);
+  const url = `${API_BASE}/api/stream?${params.toString()}`;
+  const source = new EventSource(url);
+
+  for (const type of EVENT_TYPES) {
+    source.addEventListener(type, (ev) => {
+      try {
+        const data = JSON.parse((ev as MessageEvent).data) as SSEEvent;
+        onEvent(data);
+      } catch {
+        // malformed payload — drop
+      }
+    });
+  }
+
+  source.onerror = () => {
+    source.close();
+  };
+
+  return source;
+}
