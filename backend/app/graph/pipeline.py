@@ -13,6 +13,7 @@ from app.agents.requirements_parser import parse_requirements
 from app.agents.wokwi_diagram_generator import generate_diagram
 from app.build.compiler import build_firmware
 from app.schemas.state import DesignState
+from app.simulate.runner import run_simulation
 
 
 async def _node_requirements(state: DesignState) -> DesignState:
@@ -80,6 +81,13 @@ async def _node_build(state: DesignState) -> DesignState:
     state.build_stdout = result.stdout
     state.build_success = result.success
     state.uf2_artifact_path = result.uf2_path
+    return state
+
+
+async def _node_simulate(state: DesignState) -> DesignState:
+    sim = await run_simulation(state.uf2_artifact_path, state.wokwi_diagram)
+    state.simulate_log = sim.log
+    state.simulate_mode = sim.mode  # type: ignore[assignment]
     state.pipeline_complete = True
     return state
 
@@ -94,6 +102,7 @@ def build_pipeline():
     g.add_node("wokwi", _node_wokwi)
     g.add_node("code", _node_code)
     g.add_node("build", _node_build)
+    g.add_node("simulate", _node_simulate)
 
     g.set_entry_point("requirements")
     g.add_edge("requirements", "pinout")
@@ -103,7 +112,8 @@ def build_pipeline():
     g.add_edge("errata", "wokwi")
     g.add_edge("wokwi", "code")
     g.add_edge("code", "build")
-    g.add_edge("build", END)
+    g.add_edge("build", "simulate")
+    g.add_edge("simulate", END)
 
     return g.compile()
 

@@ -1,0 +1,18 @@
+[pico] USB serial connected
+[pico] Initializing I2C0 @ 400kHz on GP4/GP5
+[pico] BME280 found at 0x76 (chip_id=0x60)
+[pico] SSD1306 found at 0x3C
+[pico] Calibration loaded: dig_T1=27504 dig_T2=26435 dig_T3=-1000
+[pico] Entering main loop
+Temperature: 22.8 C  Humidity: 41.3 %  Pressure: 1013.2 hPa
+Temperature: 22.9 C  Humidity: 41.2 %  Pressure: 1013.1 hPa
+Temperature: 23.0 C  Humidity: 41.1 %  Pressure: 1013.2 hPa
+Temperature: 23.2 C  Humidity: 41.0 %  Pressure: 1013.3 hPa
+Temperature: 23.4 C  Humidity: 40.8 %  Pressure: 1013.3 hPa
+Temperature: 23.7 C  Humidity: 40.6 %  Pressure: 1013.4 hPa
+Temperature: 24.0 C  Humidity: 40.3 %  Pressure: 1013.3 hPa
+Temperature: 24.3 C  Humidity: 40.0 %  Pressure: 1013.2 hPa
+Temperature: 24.7 C  Humidity: 39.7 %  Pressure: 1013.1 hPa
+Temperature: 25.0 C  Humidity: 39.4 %  Pressure: 1013.0 hPa
+Temperature: 25.3 C  Humidity: 39.2 %  Pressure: 1012.9 hPa
+[pico] Simulation ran for 10.0s — exiting
