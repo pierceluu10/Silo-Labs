@@ -5,6 +5,7 @@ import { openPipelineStream } from "@/lib/sse";
 import { useSiloStore } from "@/lib/store";
 import { AgentPanel } from "./AgentPanel";
 import { CentralHero } from "./CentralHero";
+import { PinoutDiagram } from "@/components/visuals/pinout/PinoutDiagram";
 
 interface Props {
   prompt: string;
@@ -33,7 +34,9 @@ export function WorkspaceLayout({ prompt }: Props) {
       <AgentPanel
         title="Requirements · Pinout"
         agents={["requirements_parser", "pinout_resolver"]}
-      />
+      >
+        <PinoutDiagram />
+      </AgentPanel>
       <div className="row-span-2 min-h-0">
         <CentralHero />
       </div>
