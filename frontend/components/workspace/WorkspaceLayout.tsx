@@ -6,6 +6,7 @@ import { useSiloStore } from "@/lib/store";
 import { AgentPanel } from "./AgentPanel";
 import { CentralHero } from "./CentralHero";
 import { PinoutDiagram } from "@/components/visuals/pinout/PinoutDiagram";
+import { ClockTree } from "@/components/visuals/clock-tree/ClockTree";
 
 interface Props {
   prompt: string;
@@ -40,7 +41,9 @@ export function WorkspaceLayout({ prompt }: Props) {
       <div className="row-span-2 min-h-0">
         <CentralHero />
       </div>
-      <AgentPanel title="Clocks" agents={["clock_configurator"]} />
+      <AgentPanel title="Clocks" agents={["clock_configurator"]}>
+        <ClockTree />
+      </AgentPanel>
       <AgentPanel
         title="Errata · Wiring"
         agents={["errata_checker", "wokwi_diagram_generator"]}
