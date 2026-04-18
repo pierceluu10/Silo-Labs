@@ -1,0 +1,52 @@
+{
+  "_doc": "Mapping of peripheral/device names to Wokwi component types (see https://docs.wokwi.com/parts/). The 'pins' field lists the component's externally-exposed pin names used by the Wokwi Diagram Generator when emitting diagram.json connections.",
+  "components": {
+    "pico": {
+      "type": "wokwi-pi-pico",
+      "label": "Raspberry Pi Pico",
+      "pins": ["GP0","GP1","GP2","GP3","GP4","GP5","GP6","GP7","GP8","GP9","GP10","GP11","GP12","GP13","GP14","GP15","GP16","GP17","GP18","GP19","GP20","GP21","GP22","GP26","GP27","GP28","GND","3V3","VBUS","VSYS","RUN","GP25_LED"]
+    },
+    "bme280": {
+      "type": "wokwi-bme280",
+      "label": "BME280 T/H/P sensor",
+      "pins": ["VCC","GND","SCL","SDA"],
+      "default_i2c_address": "0x76"
+    },
+    "ssd1306": {
+      "type": "board-ssd1306",
+      "label": "SSD1306 128x64 OLED",
+      "pins": ["VCC","GND","SCL","SDA"],
+      "default_i2c_address": "0x3C"
+    },
+    "led": {
+      "type": "wokwi-led",
+      "label": "LED",
+      "pins": ["A","C"]
+    },
+    "resistor": {
+      "type": "wokwi-resistor",
+      "label": "Resistor",
+      "pins": ["1","2"]
+    },
+    "pushbutton": {
+      "type": "wokwi-pushbutton",
+      "label": "Pushbutton",
+      "pins": ["1.l","2.l","1.r","2.r"]
+    },
+    "ds18b20": {
+      "type": "wokwi-ds18b20",
+      "label": "DS18B20 1-Wire temperature",
+      "pins": ["VCC","GND","DQ"]
+    },
+    "mpu6050": {
+      "type": "wokwi-mpu6050",
+      "label": "MPU6050 IMU",
+      "pins": ["VCC","GND","SCL","SDA","INT"]
+    },
+    "hd44780": {
+      "type": "wokwi-lcd1602",
+      "label": "HD44780 1602 LCD (I2C backpack)",
+      "pins": ["VCC","GND","SDA","SCL"]
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "_doc": "RP2040 clock tree per datasheet section 2.15. Nodes include oscillator sources, PLLs, and clock domains. Edges represent selectable or derived clock paths. Positions are laid out left-to-right for React Flow rendering.",
+  "nodes": [
+    {"id": "ROSC",     "kind": "source",   "label": "ROSC",      "default_freq_hz": 6500000,   "position": {"x": 60,  "y": 60}},
+    {"id": "XOSC",     "kind": "source",   "label": "XOSC (12MHz)", "default_freq_hz": 12000000, "position": {"x": 60,  "y": 180}},
+    {"id": "GPIN0",    "kind": "source",   "label": "GPIN0",     "default_freq_hz": 0,         "position": {"x": 60,  "y": 300}},
+    {"id": "GPIN1",    "kind": "source",   "label": "GPIN1",     "default_freq_hz": 0,         "position": {"x": 60,  "y": 420}},
+    {"id": "PLL_SYS",  "kind": "pll",      "label": "PLL_SYS",   "default_freq_hz": 125000000, "position": {"x": 280, "y": 180}},
+    {"id": "PLL_USB",  "kind": "pll",      "label": "PLL_USB",   "default_freq_hz": 48000000,  "position": {"x": 280, "y": 300}},
+    {"id": "CLK_REF",  "kind": "domain",   "label": "clk_ref",   "default_freq_hz": 12000000,  "position": {"x": 520, "y": 60}},
+    {"id": "CLK_SYS",  "kind": "domain",   "label": "clk_sys",   "default_freq_hz": 125000000, "position": {"x": 520, "y": 160}},
+    {"id": "CLK_PERI", "kind": "domain",   "label": "clk_peri",  "default_freq_hz": 125000000, "position": {"x": 520, "y": 260}},
+    {"id": "CLK_USB",  "kind": "domain",   "label": "clk_usb",   "default_freq_hz": 48000000,  "position": {"x": 520, "y": 360}},
+    {"id": "CLK_ADC",  "kind": "domain",   "label": "clk_adc",   "default_freq_hz": 48000000,  "position": {"x": 520, "y": 460}},
+    {"id": "CLK_RTC",  "kind": "domain",   "label": "clk_rtc",   "default_freq_hz": 46875,     "position": {"x": 520, "y": 560}}
+  ],
+  "edges": [
+    {"source": "XOSC", "target": "PLL_SYS", "kind": "reference"},
+    {"source": "XOSC", "target": "PLL_USB", "kind": "reference"},
+
+    {"source": "PLL_SYS", "target": "CLK_SYS",  "kind": "mux"},
+    {"source": "PLL_SYS", "target": "CLK_PERI", "kind": "mux"},
+
+    {"source": "PLL_USB", "target": "CLK_USB",  "kind": "mux"},
+    {"source": "PLL_USB", "target": "CLK_ADC",  "kind": "mux"},
+    {"source": "PLL_USB", "target": "CLK_RTC",  "kind": "mux"},
+
+    {"source": "XOSC", "target": "CLK_REF",  "kind": "mux"},
+    {"source": "XOSC", "target": "CLK_SYS",  "kind": "mux_alt"},
+    {"source": "XOSC", "target": "CLK_PERI", "kind": "mux_alt"},
+
+    {"source": "ROSC", "target": "CLK_REF", "kind": "mux_alt"},
+    {"source": "ROSC", "target": "CLK_SYS", "kind": "mux_alt"},
+    {"source": "ROSC", "target": "CLK_RTC", "kind": "mux_alt"},
+
+    {"source": "CLK_SYS", "target": "CLK_PERI", "kind": "mux_alt"},
+
+    {"source": "GPIN0", "target": "CLK_REF", "kind": "mux_alt"},
+    {"source": "GPIN1", "target": "CLK_SYS", "kind": "mux_alt"}
+  ]
+}

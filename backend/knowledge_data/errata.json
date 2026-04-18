@@ -1,0 +1,77 @@
+{
+  "_doc": "RP2040 errata per datasheet section 13. Each entry lists the subsystem affected, severity, a detection heuristic the Errata Checker agent can match against, and the published workaround.",
+  "errata": [
+    {
+      "id": "E1",
+      "subsystem": "USB",
+      "severity": "info",
+      "title": "USB device enumeration fails without reset sequence",
+      "description": "Under some host timings the USB device fails to enumerate unless the boot ROM reset path is invoked before enumeration completes.",
+      "triggers": ["USB", "tinyusb", "stdio_usb"],
+      "workaround": "Use pico-sdk >= 1.4.0 which applies the boot reset workaround automatically."
+    },
+    {
+      "id": "E2",
+      "subsystem": "SPI",
+      "severity": "warning",
+      "title": "SPI BUSY bit de-asserts one cycle early",
+      "description": "The SSPSR.BSY bit clears one SCLK cycle before the final bit is shifted out, so polling BSY to detect transfer completion can race.",
+      "triggers": ["SPI", "spi_is_busy", "BSY", "SSPSR"],
+      "workaround": "Insert a small busy-wait (1 SCLK period) after BSY clears, or use DMA and wait on the DMA transfer-complete IRQ instead."
+    },
+    {
+      "id": "E3",
+      "subsystem": "ROSC",
+      "severity": "info",
+      "title": "ROSC phase control register undocumented bits",
+      "description": "Bits 4..7 of ROSC_PHASE are reserved and must be written as zero to avoid undefined oscillator phase.",
+      "triggers": ["ROSC_PHASE", "rosc"],
+      "workaround": "Always mask ROSC_PHASE writes with 0x0F."
+    },
+    {
+      "id": "E4",
+      "subsystem": "I2C",
+      "severity": "warning",
+      "title": "IC_TX_ABRT_SOURCE is cleared by reading IC_CLR_TX_ABRT, not IC_CLR_INTR",
+      "description": "Reading IC_CLR_INTR does not clear TX_ABRT_SOURCE; callers must read IC_CLR_TX_ABRT explicitly after an abort.",
+      "triggers": ["I2C", "TX_ABRT", "IC_CLR_INTR"],
+      "workaround": "After detecting a TX abort, read IC_CLR_TX_ABRT before attempting the next transfer."
+    },
+    {
+      "id": "E5",
+      "subsystem": "GPIO",
+      "severity": "info",
+      "title": "Brief glitch on pad function reassignment",
+      "description": "Changing GPIO function via FUNCSEL while the pin is driven can produce a sub-microsecond glitch on the pad.",
+      "triggers": ["gpio_set_function", "FUNCSEL"],
+      "workaround": "Disable output (OE=0) before changing FUNCSEL when glitches are unacceptable."
+    },
+    {
+      "id": "E7",
+      "subsystem": "PWM",
+      "severity": "info",
+      "title": "PWM counter stalls at TOP when CSR.PH_CORRECT changes mid-count",
+      "description": "Toggling phase-correct mode while the counter is non-zero causes a one-period stall.",
+      "triggers": ["PWM", "PH_CORRECT"],
+      "workaround": "Disable the slice (CSR.EN=0) before changing PH_CORRECT, then re-enable."
+    },
+    {
+      "id": "E10",
+      "subsystem": "XIP",
+      "severity": "warning",
+      "title": "XIP cache returns stale data after flash program without flush",
+      "description": "The XIP cache does not snoop flash writes. Reads from flash immediately after a program/erase may return pre-write values.",
+      "triggers": ["flash_range_program", "XIP", "cache"],
+      "workaround": "Call flash_range_erase/program from RAM and flush the XIP cache (xip_ctrl_hw->flush = 1) before resuming execution from flash."
+    },
+    {
+      "id": "E14",
+      "subsystem": "UART",
+      "severity": "info",
+      "title": "UART DMA TX completion IRQ fires before final byte leaves shift register",
+      "description": "The DMA completion IRQ fires when the last byte is written to UARTDR, not when the shift register has emptied.",
+      "triggers": ["UART", "DMA", "uart_tx"],
+      "workaround": "Wait on UARTFR.BUSY=0 after the DMA completion IRQ before asserting RTS or powering down."
+    }
+  ]
+}
