@@ -11,6 +11,7 @@ from app.agents.peripheral_configurator import configure_peripheral
 from app.agents.pinout_resolver import resolve_pinout
 from app.agents.requirements_parser import parse_requirements
 from app.agents.wokwi_diagram_generator import generate_diagram
+from app.build.compiler import build_firmware
 from app.schemas.state import DesignState
 
 
@@ -71,6 +72,14 @@ async def _node_code(state: DesignState) -> DesignState:
     state.generated_code = main_c
     state.cmake_content = cmake
     state.active_agent = None
+    return state
+
+
+async def _node_build(state: DesignState) -> DesignState:
+    result = await build_firmware(state.generated_code, state.cmake_content)
+    state.build_stdout = result.stdout
+    state.build_success = result.success
+    state.uf2_artifact_path = result.uf2_path
     state.pipeline_complete = True
     return state
 
@@ -84,6 +93,7 @@ def build_pipeline():
     g.add_node("errata", _node_errata)
     g.add_node("wokwi", _node_wokwi)
     g.add_node("code", _node_code)
+    g.add_node("build", _node_build)
 
     g.set_entry_point("requirements")
     g.add_edge("requirements", "pinout")
@@ -92,7 +102,8 @@ def build_pipeline():
     g.add_edge("peripheral", "errata")
     g.add_edge("errata", "wokwi")
     g.add_edge("wokwi", "code")
-    g.add_edge("code", END)
+    g.add_edge("code", "build")
+    g.add_edge("build", END)
 
     return g.compile()
 
