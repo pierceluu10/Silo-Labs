@@ -7,6 +7,7 @@ import { AgentPanel } from "./AgentPanel";
 import { CentralHero } from "./CentralHero";
 import { PinoutDiagram } from "@/components/visuals/pinout/PinoutDiagram";
 import { ClockTree } from "@/components/visuals/clock-tree/ClockTree";
+import { RegisterPanel } from "@/components/visuals/registers/RegisterPanel";
 
 interface Props {
   prompt: string;
@@ -51,7 +52,9 @@ export function WorkspaceLayout({ prompt }: Props) {
       <AgentPanel
         title="Registers · Code"
         agents={["peripheral_configurator", "code_composer"]}
-      />
+      >
+        <RegisterPanel />
+      </AgentPanel>
       <footer
         className="col-span-3 flex items-center justify-between text-[11px] uppercase tracking-[0.18em] mt-0 pt-2 border-t"
         style={{ borderColor: "var(--color-charcoal)", color: "var(--color-steel)" }}
