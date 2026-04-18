@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+@theme {
+  --color-abyss: #050507;
+  --color-carbon: #101010;
+  --color-charcoal: #3d3a39;
+  --color-snow: #f2f2f2;
+  --color-parchment: #b8b3b0;
+  --color-steel: #8b949e;
+  --color-fog: #bdbdbd;
+  --color-mist: #dcdcdc;
+
+  --color-accent: #e63946;
+  --color-accent-light: #ff6b6b;
+  --color-accent-tint: rgba(230, 57, 70, 0.3);
+
+  --color-warn: #ffba00;
+  --color-danger: #fb565b;
+  --color-info: #4cb3d4;
+  --color-purple: #818cf8;
+
+  --font-sans: Inter, system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell,
+    "Noto Sans", Helvetica, Arial, sans-serif;
+  --font-display: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell,
+    "Noto Sans", Helvetica, Arial, sans-serif;
+  --font-mono: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    monospace;
+
+  --shadow-ambient: rgba(92, 88, 85, 0.2) 0px 0px 15px;
+  --shadow-dramatic: rgba(0, 0, 0, 0.7) 0px 20px 60px,
+    rgba(148, 163, 184, 0.1) 0px 0px 0px 1px inset;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: var(--color-abyss);
+  color: var(--color-snow);
+  font-family: var(--font-sans);
+  font-feature-settings: "calt", "rlig";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+::selection {
+  background: var(--color-accent-tint);
+  color: var(--color-snow);
+}
+
+@keyframes accent-glow {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 2px var(--color-accent));
+  }
+  50% {
+    filter: drop-shadow(0 0 8px var(--color-accent));
+  }
+}
+
+.accent-glow {
+  animation: accent-glow 2.4s ease-in-out infinite;
+}
