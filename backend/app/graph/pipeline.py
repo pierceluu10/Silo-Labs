@@ -12,6 +12,7 @@ from app.agents.errata_checker import check_errata
 from app.agents.peripheral_configurator import configure_peripheral
 from app.agents.pinout_resolver import resolve_pinout
 from app.agents.requirements_parser import parse_requirements
+from app.agents.supervisor import plan_features
 from app.agents.wokwi_diagram_generator import generate_diagram
 from app.build.compiler import build_firmware
 from app.schemas.state import (
@@ -27,6 +28,7 @@ from app.simulate.runner import run_simulation
 from .event_bus import emit
 
 AGENT_PANELS: dict[AgentName, str] = {
+    "supervisor": "top-left",
     "requirements_parser": "top-left",
     "pinout_resolver": "top-left",
     "clock_configurator": "top-right",
@@ -38,6 +40,7 @@ AGENT_PANELS: dict[AgentName, str] = {
 
 # Short status lines for SSE (LangGraph still runs the real work in each node).
 REASONING_INTRO: dict[AgentName, str] = {
+    "supervisor": "→ Decomposing your prompt into independent feature plans.\n",
     "requirements_parser": "→ Parsing your prompt: peripheral, device, one-line spec.\n",
     "pinout_resolver": "→ Picking SDA/SCL and instance on valid user GPIOs (not GP0/GP1).\n",
     "clock_configurator": "→ Clocks: XOSC, PLL, CLK_SYS / CLK_PERI for 125 MHz bring-up.\n",
@@ -91,6 +94,12 @@ def _activity(agent: AgentName, key: str, label: str, status: str, value: str | 
 # events fire — pin_<n>, clock_<domain>, etc.) or in bulk at agent_complete
 # for the items that don't have a corresponding event source.
 _ACTIVITY_TEMPLATES: dict[AgentName, list[tuple[str, str]]] = {
+    "supervisor": [
+        ("read-prompt", "Reading user prompt"),
+        ("identify-peripherals", "Identifying peripherals + devices"),
+        ("decompose-features", "Decomposing into parallel features"),
+        ("publish-plan", "Publishing run plan"),
+    ],
     "requirements_parser": [
         ("parse-prompt", "Parsing prompt for peripheral type"),
         ("identify-device", "Identifying device + I2C/SPI address"),
@@ -144,6 +153,36 @@ def _finalize_pending(agent: AgentName) -> None:
     """Mark any leftover canonical items done at agent_complete time."""
     for key, label in _ACTIVITY_TEMPLATES.get(agent, []):
         _activity(agent, key, label, "done")
+
+
+async def _node_supervisor(state: DesignState) -> DesignState:
+    """Decompose the prompt into feature specs the rest of the pipeline branches on."""
+
+    state.active_agent = "supervisor"
+    t = _agent_start("supervisor")
+    _emit_pending("supervisor")
+    plan = await plan_features(state.user_prompt, target_mcu=state.target_mcu)
+    state.run_plan = plan
+    feature_count = len(plan.features)
+    devices = ", ".join(f.device_name for f in plan.features) or "—"
+    _activity("supervisor", "read-prompt", "Read user prompt", "done")
+    _activity("supervisor", "identify-peripherals", f"Devices: {devices}", "done")
+    _activity(
+        "supervisor",
+        "decompose-features",
+        f"Decomposed into {feature_count} feature(s)",
+        "done",
+    )
+    emit(
+        {
+            "type": "run_plan",
+            "features": [f.model_dump() for f in plan.features],
+            "rationale": plan.rationale,
+        }
+    )
+    _activity("supervisor", "publish-plan", "Published run plan to UI", "done")
+    _agent_complete("supervisor", t)
+    return state
 
 
 async def _node_requirements(state: DesignState) -> DesignState:
@@ -450,6 +489,7 @@ async def _node_simulate(state: DesignState) -> DesignState:
 
 def build_pipeline():
     g: StateGraph = StateGraph(DesignState)
+    g.add_node("supervisor", _node_supervisor)
     g.add_node("requirements", _node_requirements)
     g.add_node("pinout", _node_pinout)
     g.add_node("clocks", _node_clocks)
@@ -460,7 +500,8 @@ def build_pipeline():
     g.add_node("build", _node_build)
     g.add_node("simulate", _node_simulate)
 
-    g.set_entry_point("requirements")
+    g.set_entry_point("supervisor")
+    g.add_edge("supervisor", "requirements")
     g.add_edge("requirements", "pinout")
     g.add_edge("pinout", "clocks")
     g.add_edge("clocks", "peripheral")
