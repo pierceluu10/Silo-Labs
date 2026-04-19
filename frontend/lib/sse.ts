@@ -19,6 +19,7 @@ const EVENT_TYPES: readonly SSEEventType[] = [
   "errata_warning",
   "code_chunk",
   "code_complete",
+  "generated_files",
   "build_start",
   "build_log",
   "build_success",

@@ -6,6 +6,10 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from app.schemas.state import GeneratedFile
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 PROJECT_NAME = "firmware"
@@ -66,12 +70,52 @@ async def _run(cmd: list[str], cwd: Path, env: dict) -> tuple[int, str]:
     return proc.returncode or 0, output.decode(errors="replace")
 
 
+def _is_safe_relative(path_str: str) -> bool:
+    """Reject absolute paths or anything climbing out of the project dir."""
+
+    if not path_str or path_str.startswith("/") or ":" in path_str:
+        return False
+    parts = Path(path_str).parts
+    return ".." not in parts
+
+
+def _write_files(workdir: Path, files: "list[GeneratedFile]") -> None:
+    """Write the LLM-emitted file map to disk under workdir."""
+
+    cmake_seen = False
+    main_seen = False
+    for f in files:
+        if not _is_safe_relative(f.path):
+            # Quietly skip unsafe entries; alternative is to abort the build.
+            continue
+        target = workdir / f.path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if f.path == "CMakeLists.txt":
+            target.write_text(_render_cmakelists(f.content))
+            cmake_seen = True
+        else:
+            target.write_text(f.content)
+            if f.path == "main.c":
+                main_seen = True
+    if not cmake_seen or not main_seen:
+        raise ValueError(
+            f"Generated project missing required files (main.c={main_seen}, CMakeLists.txt={cmake_seen})"
+        )
+
+
 async def build_firmware(
-    main_c: str,
-    composed_cmake: str,
+    files_or_main_c: "list[GeneratedFile] | str",
+    composed_cmake: str | None = None,
     project_dir: Path | None = None,
     pico_sdk_path: str | None = None,
 ) -> BuildResult:
+    """Build a firmware project.
+
+    Two call styles for backwards compatibility:
+      - ``await build_firmware(files=[GeneratedFile(...), ...])`` (multi-file).
+      - ``await build_firmware(main_c, composed_cmake)`` (legacy two-file).
+    """
+
     pico_sdk_path = pico_sdk_path or os.environ.get("PICO_SDK_PATH", "/opt/pico-sdk")
     if not Path(pico_sdk_path).exists():
         return BuildResult(
@@ -83,8 +127,17 @@ async def build_firmware(
     workdir = project_dir or Path(tempfile.mkdtemp(prefix="silo_build_"))
     workdir.mkdir(parents=True, exist_ok=True)
 
-    (workdir / "main.c").write_text(main_c)
-    (workdir / "CMakeLists.txt").write_text(_render_cmakelists(composed_cmake))
+    if isinstance(files_or_main_c, str):
+        # Legacy path: (main_c, composed_cmake) — build a synthetic file list.
+        from app.schemas.state import GeneratedFile  # local import avoids cycle
+
+        files: "list[GeneratedFile]" = [
+            GeneratedFile(path="main.c", content=files_or_main_c),
+            GeneratedFile(path="CMakeLists.txt", content=composed_cmake or ""),
+        ]
+    else:
+        files = files_or_main_c
+    _write_files(workdir, files)
     shutil.copy(TEMPLATES_DIR / "pico_sdk_import.cmake", workdir / "pico_sdk_import.cmake")
 
     build_dir = workdir / "build"

@@ -7,7 +7,7 @@ import uuid
 from langgraph.graph import END, StateGraph
 
 from app.agents.clock_configurator import configure_clocks
-from app.agents.code_composer import compose_code
+from app.agents.code_composer import compose_code, split_main_and_cmake
 from app.agents.errata_checker import check_errata
 from app.agents.peripheral_configurator import configure_peripheral
 from app.agents.pinout_resolver import resolve_pinout
@@ -364,23 +364,38 @@ async def _node_code(state: DesignState) -> DesignState:
     _emit_pending("code_composer")
     assert state.requirements is not None
     _activity("code_composer", "includes", "Drafting includes + pin macros", "done")
-    main_c, cmake = await compose_code(
+
+    files = await compose_code(
         state.requirements,
         list(state.pin_assignments),
         list(state.clock_configs),
         list(state.register_writes),
+        target_mcu=state.target_mcu,
+        build_error_hint=state.last_build_error_hint,
     )
+    state.generated_files = files
+    main_c, cmake = split_main_and_cmake(files)
     state.generated_code = main_c
     state.cmake_content = cmake
+
+    extra_files = [f.path for f in files if f.path not in {"main.c", "CMakeLists.txt"}]
     _activity("code_composer", "init", f"Wrote {state.requirements.device_name} init sequence", "done")
     _activity("code_composer", "loop", "Wrote main loop with printf cadence", "done")
-    _activity("code_composer", "cmake", f"Composed CMakeLists ({len(cmake)} chars)", "done")
+    _activity(
+        "code_composer",
+        "cmake",
+        f"Composed CMakeLists + {len(extra_files)} extra file(s)" if extra_files else "Composed CMakeLists target",
+        "done",
+    )
+    emit(
+        {
+            "type": "generated_files",
+            "files": [f.model_dump() for f in files],
+        }
+    )
+
     _activity("code_composer", "stream", "Streaming code to editor…", "active")
-    # Typewriter-style stream: emit one line at a time. Sleep length scales
-    # with line length (longer lines = a touch more pause) so a 13 KB main.c
-    # streams visibly over ~6-8 s rather than dumping at once. Real token
-    # streaming isn't available because `with_structured_output` returns the
-    # full string; this is the cheapest convincing approximation.
+    # Typewriter-style stream of main.c so the central editor fills progressively.
     for line in main_c.splitlines(keepends=True):
         emit({"type": "code_chunk", "delta": line})
         await asyncio.sleep(min(0.08, 0.020 + len(line) * 0.0008))
@@ -393,7 +408,18 @@ async def _node_code(state: DesignState) -> DesignState:
 
 async def _node_build(state: DesignState) -> DesignState:
     emit({"type": "build_start"})
-    result = await build_firmware(state.generated_code, state.cmake_content)
+    files = state.generated_files or [
+        # Legacy fallback if some path skipped multi-file generation.
+        # GeneratedFile import lives inline to avoid cycles with state.
+    ]
+    if not files:
+        from app.schemas.state import GeneratedFile
+
+        files = [
+            GeneratedFile(path="main.c", content=state.generated_code),
+            GeneratedFile(path="CMakeLists.txt", content=state.cmake_content),
+        ]
+    result = await build_firmware(files)
     for line in result.stdout.splitlines():
         emit({"type": "build_log", "line": line})
     state.build_stdout = result.stdout
@@ -401,8 +427,12 @@ async def _node_build(state: DesignState) -> DesignState:
     state.uf2_artifact_path = result.uf2_path
     state.elf_artifact_path = result.elf_path
     if result.success and result.uf2_path:
+        # Successful build clears any prior retry hint so a future failure routes fresh.
+        state.last_build_error_hint = None
         emit({"type": "build_success", "uf2_url": f"/api/artifacts/{state.session_id}/firmware.uf2"})
     else:
+        # Stash the tail of stderr so the conditional retry edge can hand it to code_composer.
+        state.last_build_error_hint = result.stdout[-1500:]
         emit({"type": "build_failure", "error": "build failed", "stderr": result.stdout[-2000:]})
     return state
 

@@ -65,6 +65,10 @@ export type SSEEvent =
     }
   | { type: "code_chunk"; delta: string }
   | { type: "code_complete"; full_code: string }
+  | {
+      type: "generated_files";
+      files: { path: string; content: string; language?: string | null }[];
+    }
   | { type: "build_start" }
   | { type: "build_log"; line: string }
   | { type: "build_success"; uf2_url: string }

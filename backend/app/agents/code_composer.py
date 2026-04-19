@@ -3,44 +3,67 @@ from __future__ import annotations
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
-from app.schemas.state import Requirements
+from app.mcu import get_profile
+from app.schemas.state import GeneratedFile, Requirements
 from app.schemas.tools import AssignPin, ConfigureClock, SetRegister
 
-from ._common import sonnet, svd_system_context
+from ._common import sonnet
 
 
-class ComposedProject(BaseModel):
-    main_c: str = Field(description="Full contents of main.c using pico-sdk high-level APIs")
-    cmake: str = Field(description="CMakeLists.txt content for this project (NO pico_sdk_import boilerplate)")
+class _GeneratedFileLLM(BaseModel):
+    """LLM-side mirror of GeneratedFile (kept loose so the schema is permissive)."""
+
+    path: str = Field(description="Path relative to project root, e.g. 'main.c' or 'drivers/ws2812.pio'.")
+    content: str = Field(description="Full file contents.")
+    language: str | None = Field(default=None, description="Optional syntax hint.")
 
 
-SYSTEM = """You are the Code Composer. You produce a complete, compilable pico-sdk C program
-for the RP2040 plus a project-specific CMakeLists.txt.
+class MultiFileProject(BaseModel):
+    """Generated project as an explicit file map.
 
-Rules for main.c:
-- Use pico-sdk high-level APIs (e.g. i2c_init, i2c_write_blocking, gpio_set_function, stdio_init_all).
-- Include the correct headers (pico/stdlib.h, hardware/i2c.h, etc.).
-- Use the exact GP pin numbers from the pin assignments.
-- Initialize stdio over USB (pico_enable_stdio_usb) so serial output works in Wokwi.
-- main() must loop forever reading the device and printing results via printf every ~1s.
+    main.c and CMakeLists.txt are required (the build wrapper expects them).
+    Anything else is allowed: extra .c/.h drivers, .pio programs, even nested
+    directories like ``drivers/ws2812.c``.
+    """
 
-Rules for CMakeLists.txt — emit ONLY the project-specific lines below; nothing else:
-  add_executable(firmware main.c)
-  target_link_libraries(firmware pico_stdlib hardware_i2c)   # add the libs you actually use
+    files: list[_GeneratedFileLLM] = Field(min_length=2)
+
+
+SYSTEM_BASE = """You are the Code Composer.
+
+Output a complete, compilable embedded firmware project as a list of files.
+The project MUST include at minimum:
+  - "main.c"          — entry point with a forever loop
+  - "CMakeLists.txt"  — project-specific build lines only (see rules)
+
+You MAY include any number of additional files when the task warrants it:
+  - "drivers/<device>.c" + "drivers/<device>.h" for cleanly separated drivers
+  - "<peripheral>.pio" for PIO programs
+  - "include/config.h" for shared constants
+Use realistic paths; the build wrapper writes them all into one project tree.
+
+CMakeLists.txt rules — emit ONLY the project-specific lines below; nothing else:
+  add_executable(firmware main.c drivers/foo.c ...)   # list every .c you ship
+  target_link_libraries(firmware pico_stdlib hardware_i2c ...)  # only what you use
   pico_enable_stdio_usb(firmware 1)
   pico_enable_stdio_uart(firmware 0)
   pico_add_extra_outputs(firmware)
+  # PIO programs need pico_generate_pio_header(firmware ${CMAKE_CURRENT_LIST_DIR}/foo.pio)
 
-STRICTLY FORBIDDEN in your CMakeLists.txt content:
-- cmake_minimum_required(...)        — the build wrapper sets it.
-- project(...)                       — the build wrapper sets it.
-- include(pico_sdk_import.cmake)     — the build wrapper adds it.
-- pico_sdk_init()                    — the build wrapper calls it.
-- find_package(...)                  — never use find_package; pico-sdk libraries are linked
-                                       directly by name (e.g. pico_stdlib, hardware_i2c).
-- set(PICO_SDK_PATH ...) / set(PICO_BOARD ...) — already provided by env / wrapper.
+STRICTLY FORBIDDEN in CMakeLists.txt content:
+- cmake_minimum_required(...)        — the wrapper sets it.
+- project(...)                       — the wrapper sets it.
+- include(pico_sdk_import.cmake)     — the wrapper adds it.
+- pico_sdk_init()                    — the wrapper calls it.
+- find_package(...)                  — pico-sdk libraries link by name.
+- set(PICO_SDK_PATH ...) / set(PICO_BOARD ...)
 
-NO markdown fences, NO prose — just code in the two fields.
+Constraints across all files:
+- Use the exact GP pin numbers from the pin assignments.
+- Initialise stdio over USB so printf reaches the simulator.
+- main() loops forever and prints periodic readings via printf.
+
+NO markdown fences, NO prose, NO extra commentary — just file content in the structured output.
 """
 
 
@@ -49,11 +72,30 @@ async def compose_code(
     pin_assignments: list[AssignPin],
     clock_configs: list[ConfigureClock],
     register_writes: list[SetRegister],
-) -> tuple[str, str]:
-    # Generous budget: a full pico-sdk main.c + CMakeLists.txt serialized
-    # as JSON-escaped strings inside a single tool call comfortably fits in 8k
-    # output tokens; 4k previously truncated the tool args mid-emission.
-    llm = sonnet(max_tokens=8192).with_structured_output(ComposedProject)
+    *,
+    target_mcu: str = "rp2040",
+    build_error_hint: str | None = None,
+) -> list[GeneratedFile]:
+    """Generate a multi-file firmware project tailored to the given MCU profile.
+
+    Returns a list of GeneratedFile rather than the legacy (main_c, cmake) pair
+    so the build wrapper can write whatever the LLM produced.
+    """
+
+    profile = get_profile(target_mcu)
+    sys_msg = (
+        SYSTEM_BASE
+        + "\n\n# Target MCU\n"
+        + profile.code_composer_system_prompt()
+        + "\n\n# Chip SVD context\n"
+        + profile.svd_summary(requirements.peripheral_type)
+    )
+    if build_error_hint:
+        sys_msg += (
+            "\n\n# Previous attempt failed during build — fix it this time\n"
+            + build_error_hint[-1500:]
+        )
+
     user = (
         f"Task: {requirements.description}\n"
         f"Peripheral: {requirements.peripheral_type}\n"
@@ -62,16 +104,28 @@ async def compose_code(
         f"Clocks: {[c.model_dump() for c in clock_configs]}\n"
         f"Register plan (register, field, value): "
         f"{[(r.peripheral, r.register, r.field_name, r.value) for r in register_writes]}\n\n"
-        f"Produce main.c and CMakeLists.txt."
+        f"Produce the full project file tree."
     )
 
-    sys_msg = f"{SYSTEM}\n\n# RP2040 SVD context\n{svd_system_context(requirements.peripheral_type)}"
-    result = await llm.ainvoke(
-        [
-            SystemMessage(content=sys_msg),
-            HumanMessage(content=user),
-        ]
-    )
-    if not isinstance(result, ComposedProject):
-        result = ComposedProject.model_validate(result)
-    return result.main_c, result.cmake
+    llm = sonnet(max_tokens=8192).with_structured_output(MultiFileProject)
+    result = await llm.ainvoke([SystemMessage(content=sys_msg), HumanMessage(content=user)])
+    if not isinstance(result, MultiFileProject):
+        result = MultiFileProject.model_validate(result)
+
+    return [
+        GeneratedFile(path=f.path, content=f.content, language=f.language)
+        for f in result.files
+    ]
+
+
+def split_main_and_cmake(files: list[GeneratedFile]) -> tuple[str, str]:
+    """Backwards-compat shim — returns (main_c, cmake) for callers that still want them."""
+
+    main_c = ""
+    cmake = ""
+    for f in files:
+        if f.path == "main.c":
+            main_c = f.content
+        elif f.path == "CMakeLists.txt":
+            cmake = f.content
+    return main_c, cmake

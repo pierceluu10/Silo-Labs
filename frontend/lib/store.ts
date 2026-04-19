@@ -56,6 +56,12 @@ export interface ActivityItem {
   value?: string;
 }
 
+export interface GeneratedFile {
+  path: string;
+  content: string;
+  language?: string | null;
+}
+
 export type FullscreenTarget = AgentName | "code" | null;
 
 export interface SiloState {
@@ -69,6 +75,7 @@ export interface SiloState {
   wires: WireEvent[];
   errata: ErrataEvent[];
   code: string;
+  generatedFiles: GeneratedFile[];
   buildLog: string[];
   simulateLog: string[];
   uf2Url: string | null;
@@ -112,6 +119,7 @@ const initial = () => ({
   wires: [] as WireEvent[],
   errata: [] as ErrataEvent[],
   code: "",
+  generatedFiles: [] as GeneratedFile[],
   buildLog: [] as string[],
   simulateLog: [] as string[],
   uf2Url: null as string | null,
@@ -178,6 +186,14 @@ export const useSiloStore = create<SiloState>((set) => ({
           return { code: state.code + event.delta };
         case "code_complete":
           return { code: event.full_code };
+        case "generated_files":
+          return {
+            generatedFiles: event.files.map((f) => ({
+              path: f.path,
+              content: f.content,
+              language: f.language ?? null,
+            })),
+          };
         case "build_log":
           return { buildLog: [...state.buildLog, event.line] };
         case "build_success":

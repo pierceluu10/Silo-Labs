@@ -115,6 +115,19 @@ async def firmware_elf(session_id: str):
     )
 
 
+@app.get("/api/sessions/{session_id}/files")
+async def session_files(session_id: str):
+    """Return the multi-file project the code agent emitted for this session."""
+
+    state = _sessions.get(session_id)
+    if not state:
+        return JSONResponse({"error": "session not found"}, status_code=404)
+    return {
+        "session_id": session_id,
+        "files": [f.model_dump() for f in state.generated_files],
+    }
+
+
 @app.get("/api/sim-bundle/{session_id}")
 async def sim_bundle(session_id: str):
     """Return the artifact set the in-page Wokwi embed needs to run a live sim.
