@@ -42,11 +42,21 @@ def test_assign_pin_rejects_invalid_color() -> None:
 def test_configure_clock_pll_requires_vco() -> None:
     with pytest.raises(ValidationError):
         ConfigureClock(
-            clock_domain=ClockSource.CLK_SYS,
-            source=ClockSource.PLL_SYS,
+            clock_domain=ClockSource.PLL_SYS,
+            source=ClockSource.XOSC,
             freq_hz=125_000_000,
             divider=1.0,
         )
+
+
+def test_configure_clock_consumer_of_pll_does_not_require_vco() -> None:
+    cfg = ConfigureClock(
+        clock_domain=ClockSource.CLK_SYS,
+        source=ClockSource.PLL_SYS,
+        freq_hz=125_000_000,
+        divider=1.0,
+    )
+    assert cfg.pll_vco_freq_hz is None
 
 
 def test_configure_clock_non_pll_does_not_require_vco() -> None:

@@ -174,13 +174,15 @@ class RPGraph:
     def get_register(self, peripheral: str, register: str) -> dict[str, Any]:
         """Resolve a (peripheral, register) pair to its authoritative address and fields.
 
-        Raises UnknownPeripheralError or UnknownRegisterError if unknown — this
-        is the tripwire that prevents the LLM from ever inventing an address.
+        Lookup is case-insensitive: the LLM occasionally emits lowercased names
+        (e.g. ``"pwm"`` vs SVD's ``"PWM"``). True typos (made-up names) still
+        raise — this remains the tripwire that prevents the LLM from inventing
+        addresses.
         """
-        pe = self._peripherals.get(peripheral)
+        pe = self._peripherals.get(peripheral) or self._peripherals.get(peripheral.upper())
         if pe is None:
             raise UnknownPeripheralError(f"Unknown peripheral instance {peripheral!r}")
-        reg = pe.registers.get(register)
+        reg = pe.registers.get(register) or pe.registers.get(register.upper())
         if reg is None:
             raise UnknownRegisterError(f"{peripheral}.{register} not in SVD")
         return {
@@ -201,9 +203,14 @@ class RPGraph:
 
     def get_field(self, peripheral: str, register: str, field_name: str) -> dict[str, Any]:
         reg = self.get_register(peripheral, register)
-        if field_name not in reg["fields"]:
-            raise UnknownRegisterError(f"{peripheral}.{register}.{field_name} not in SVD")
-        return reg["fields"][field_name]
+        if field_name in reg["fields"]:
+            return reg["fields"][field_name]
+        # Case-insensitive field lookup (LLM casing slip).
+        upper = field_name.upper()
+        for k, v in reg["fields"].items():
+            if k.upper() == upper:
+                return v
+        raise UnknownRegisterError(f"{peripheral}.{register}.{field_name} not in SVD")
 
     def list_peripherals(self, family: str | None = None) -> list[str]:
         if family is None:
@@ -223,10 +230,23 @@ class RPGraph:
     def get_wokwi_component(self, name: str) -> dict | None:
         return self._wokwi_components.get(name)
 
-    def svd_summary(self, max_registers_per_peripheral: int = 6) -> str:
-        """Render a compact text summary of the SVD used as cached agent context."""
+    def svd_summary(
+        self,
+        peripherals: Iterable[str] | None = None,
+        max_registers_per_peripheral: int = 6,
+    ) -> str:
+        """Render a compact text summary of the SVD used as cached agent context.
+
+        If `peripherals` is provided, only those peripheral names (e.g. {"I2C0",
+        "I2C1", "CLOCKS"}) are emitted. Unknown names are silently skipped.
+        """
+        if peripherals is None:
+            names = sorted(self._peripherals)
+        else:
+            wanted = {p.upper() for p in peripherals}
+            names = [n for n in sorted(self._peripherals) if n in wanted]
         lines: list[str] = ["# RP2040 peripheral summary (from SVD)"]
-        for name in sorted(self._peripherals):
+        for name in names:
             pe = self._peripherals[name]
             lines.append(f"\n## {name} @ 0x{pe.base_address:08x}")
             regs = list(pe.registers.values())[:max_registers_per_peripheral]

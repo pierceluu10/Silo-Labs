@@ -55,10 +55,11 @@ async def resolve_pinout(requirements: Requirements) -> list[AssignPin]:
         f"Choose ONE peripheral instance and return the pin assignments."
     )
 
+    sys_msg = f"{SYSTEM}\n\n# RP2040 SVD context\n{svd_system_context(requirements.peripheral_type)}"
     llm = sonnet(max_tokens=1024).with_structured_output(PinAssignmentList)
     result = await llm.ainvoke(
         [
-            SystemMessage(content=f"{SYSTEM}\n\n# RP2040 SVD context\n{svd_system_context()}"),
+            SystemMessage(content=sys_msg),
             HumanMessage(content=user_msg),
         ]
     )

@@ -17,16 +17,30 @@ class ComposedProject(BaseModel):
 SYSTEM = """You are the Code Composer. You produce a complete, compilable pico-sdk C program
 for the RP2040 plus a project-specific CMakeLists.txt.
 
-Rules:
+Rules for main.c:
 - Use pico-sdk high-level APIs (e.g. i2c_init, i2c_write_blocking, gpio_set_function, stdio_init_all).
 - Include the correct headers (pico/stdlib.h, hardware/i2c.h, etc.).
 - Use the exact GP pin numbers from the pin assignments.
 - Initialize stdio over USB (pico_enable_stdio_usb) so serial output works in Wokwi.
 - main() must loop forever reading the device and printing results via printf every ~1s.
-- The CMakeLists.txt should define a single executable target named "firmware", link
-  pico_stdlib + any required hardware libs, and call pico_add_extra_outputs.
-- Do NOT include pico_sdk_import.cmake (the build wrapper adds that).
-- NO markdown fences, NO prose — just code in the two fields.
+
+Rules for CMakeLists.txt — emit ONLY the project-specific lines below; nothing else:
+  add_executable(firmware main.c)
+  target_link_libraries(firmware pico_stdlib hardware_i2c)   # add the libs you actually use
+  pico_enable_stdio_usb(firmware 1)
+  pico_enable_stdio_uart(firmware 0)
+  pico_add_extra_outputs(firmware)
+
+STRICTLY FORBIDDEN in your CMakeLists.txt content:
+- cmake_minimum_required(...)        — the build wrapper sets it.
+- project(...)                       — the build wrapper sets it.
+- include(pico_sdk_import.cmake)     — the build wrapper adds it.
+- pico_sdk_init()                    — the build wrapper calls it.
+- find_package(...)                  — never use find_package; pico-sdk libraries are linked
+                                       directly by name (e.g. pico_stdlib, hardware_i2c).
+- set(PICO_SDK_PATH ...) / set(PICO_BOARD ...) — already provided by env / wrapper.
+
+NO markdown fences, NO prose — just code in the two fields.
 """
 
 
@@ -36,7 +50,10 @@ async def compose_code(
     clock_configs: list[ConfigureClock],
     register_writes: list[SetRegister],
 ) -> tuple[str, str]:
-    llm = sonnet(max_tokens=4096).with_structured_output(ComposedProject)
+    # Generous budget: a full pico-sdk main.c + CMakeLists.txt serialized
+    # as JSON-escaped strings inside a single tool call comfortably fits in 8k
+    # output tokens; 4k previously truncated the tool args mid-emission.
+    llm = sonnet(max_tokens=8192).with_structured_output(ComposedProject)
     user = (
         f"Task: {requirements.description}\n"
         f"Peripheral: {requirements.peripheral_type}\n"
@@ -48,9 +65,10 @@ async def compose_code(
         f"Produce main.c and CMakeLists.txt."
     )
 
+    sys_msg = f"{SYSTEM}\n\n# RP2040 SVD context\n{svd_system_context(requirements.peripheral_type)}"
     result = await llm.ainvoke(
         [
-            SystemMessage(content=f"{SYSTEM}\n\n# RP2040 SVD context\n{svd_system_context()}"),
+            SystemMessage(content=sys_msg),
             HumanMessage(content=user),
         ]
     )

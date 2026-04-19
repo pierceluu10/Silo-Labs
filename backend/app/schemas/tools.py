@@ -77,8 +77,10 @@ class ConfigureClock(BaseModel):
 
     @model_validator(mode="after")
     def _require_vco_when_pll(self) -> "ConfigureClock":
-        if self.source in (ClockSource.PLL_SYS, ClockSource.PLL_USB) and self.pll_vco_freq_hz is None:
-            raise ValueError(f"pll_vco_freq_hz required when source is {self.source.value}")
+        # VCO frequency is a property of the PLL itself (rows where clock_domain is
+        # PLL_SYS / PLL_USB), not of downstream clocks that source from a PLL.
+        if self.clock_domain in (ClockSource.PLL_SYS, ClockSource.PLL_USB) and self.pll_vco_freq_hz is None:
+            raise ValueError(f"pll_vco_freq_hz required when clock_domain is {self.clock_domain.value}")
         return self
 
 
@@ -113,10 +115,18 @@ class SetRegister(BaseModel):
         except UnknownRegisterError:
             raise
 
-        if field_name not in reg["fields"]:
-            raise UnknownRegisterError(f"{peripheral}.{register}.{field_name} not in SVD")
+        # Case-insensitive field lookup (LLM occasionally lowercases names).
+        if field_name in reg["fields"]:
+            fld = reg["fields"][field_name]
+        else:
+            upper = field_name.upper()
+            fld = next(
+                (v for k, v in reg["fields"].items() if k.upper() == upper),
+                None,
+            )
+            if fld is None:
+                raise UnknownRegisterError(f"{peripheral}.{register}.{field_name} not in SVD")
 
-        fld = reg["fields"][field_name]
         data["address"] = reg["address"]
         data["bit_offset"] = fld["offset"]
         data["bit_width"] = fld["width"]

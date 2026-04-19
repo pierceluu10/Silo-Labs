@@ -16,12 +16,41 @@ class BuildResult:
     success: bool
     stdout: str
     uf2_path: str | None
+    elf_path: str | None = None
+
+
+_FORBIDDEN_CMAKE_PATTERNS = (
+    "cmake_minimum_required",
+    "project(",
+    "include(pico_sdk_import",
+    "pico_sdk_init",
+    "find_package(",
+    "set(PICO_SDK_PATH",
+    "set(PICO_BOARD",
+)
+
+
+def _sanitize_composed_cmake(composed_cmake: str) -> str:
+    """Drop LLM-emitted CMake lines that conflict with the wrapper template.
+
+    The wrapper already provides cmake_minimum_required, project(), pico_sdk_init,
+    etc. find_package(...) is never appropriate for pico-sdk targets and has
+    historically caused 'find_package called with invalid argument "SDK"' errors.
+    """
+    kept: list[str] = []
+    for raw in composed_cmake.splitlines():
+        line = raw.strip()
+        low = line.lower()
+        if any(p in low for p in _FORBIDDEN_CMAKE_PATTERNS):
+            continue
+        kept.append(raw)
+    return "\n".join(kept).strip()
 
 
 def _render_cmakelists(composed_cmake: str) -> str:
     template = (TEMPLATES_DIR / "CMakeLists.txt.jinja").read_text()
     return template.replace("{{ project_name }}", PROJECT_NAME).replace(
-        "{{ composed_cmake }}", composed_cmake.strip()
+        "{{ composed_cmake }}", _sanitize_composed_cmake(composed_cmake)
     )
 
 
@@ -77,8 +106,10 @@ async def build_firmware(
         return BuildResult(success=False, stdout=combined, uf2_path=None)
 
     uf2 = next(build_dir.rglob("*.uf2"), None)
+    elf = next(build_dir.rglob("firmware.elf"), None) or next(build_dir.rglob("*.elf"), None)
     return BuildResult(
         success=uf2 is not None,
         stdout=combined,
         uf2_path=str(uf2) if uf2 else None,
+        elf_path=str(elf) if elf else None,
     )

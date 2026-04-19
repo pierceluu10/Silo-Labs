@@ -84,7 +84,9 @@ def test_errata_lookup_by_trigger(graph: RPGraph) -> None:
 def test_wokwi_component_lookup(graph: RPGraph) -> None:
     comp = graph.get_wokwi_component("bme280")
     assert comp is not None
-    assert comp["type"] == "wokwi-bme280"
+    # Wokwi has no native BME280 part; we use board-bmp180 (T+P sensor) as
+    # the closest stand-in so the diagram passes wokwi-cli validation.
+    assert comp["type"] == "board-bmp180"
     assert "SDA" in comp["pins"]
 
 

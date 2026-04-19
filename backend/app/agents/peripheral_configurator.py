@@ -35,10 +35,11 @@ Set bit_offset=0 and bit_width=1 as placeholders — the SVD lookup overrides th
 
 
 async def configure_peripheral(requirements: Requirements) -> list[SetRegister]:
+    sys_msg = f"{SYSTEM}\n\n# RP2040 SVD context\n{svd_system_context(requirements.peripheral_type)}"
     llm = sonnet(max_tokens=2048).with_structured_output(RegisterWriteList)
     result = await llm.ainvoke(
         [
-            SystemMessage(content=f"{SYSTEM}\n\n# RP2040 SVD context\n{svd_system_context()}"),
+            SystemMessage(content=sys_msg),
             HumanMessage(
                 content=(
                     f"Peripheral family: {requirements.peripheral_type}\n"

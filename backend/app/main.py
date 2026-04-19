@@ -16,11 +16,17 @@ from app.graph.event_bus import EventBus, set_bus
 from app.graph.pipeline import run_pipeline
 from app.schemas.state import DesignState
 
+# Allow common dev hostnames; EventSource is strict about CORS.
+_DEV_ORIGINS = (
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+)
+
 app = FastAPI(title="Silo Labs API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=list(_DEV_ORIGINS),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -51,6 +57,8 @@ async def _stream_pipeline(prompt: str, session_id: str) -> AsyncIterator[dict]:
     set_bus(bus)
 
     async def _runner() -> None:
+        # Re-bind so LangGraph/emit() in the same task can always reach the queue.
+        set_bus(bus)
         started = time.monotonic()
         try:
             bus.emit({"type": "session_ready", "session_id": session_id})
@@ -93,3 +101,45 @@ async def firmware(session_id: str):
         media_type="application/octet-stream",
         filename="firmware.uf2",
     )
+
+
+@app.get("/api/artifacts/{session_id}/firmware.elf")
+async def firmware_elf(session_id: str):
+    state = _sessions.get(session_id)
+    if not state or not state.elf_artifact_path:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return FileResponse(
+        state.elf_artifact_path,
+        media_type="application/octet-stream",
+        filename="firmware.elf",
+    )
+
+
+@app.get("/api/sim-bundle/{session_id}")
+async def sim_bundle(session_id: str):
+    """Return the artifact set the in-page Wokwi embed needs to run a live sim.
+
+    The embed posts a MessagePort back to this app; we then upload these files
+    via WokwiClient.fileUpload and call simStart. Diagram + wokwi.toml are
+    derived from session state; UF2/ELF binaries are served via separate
+    artifact endpoints (the embed will fetch them by URL).
+    """
+    state = _sessions.get(session_id)
+    if not state:
+        return JSONResponse({"error": "session not found"}, status_code=404)
+    has_uf2 = bool(state.uf2_artifact_path)
+    has_elf = bool(state.elf_artifact_path)
+    if not has_uf2:
+        return JSONResponse({"error": "build artifact missing (no UF2)"}, status_code=409)
+    diagram = state.wokwi_diagram or {}
+    wokwi_toml = (
+        '[wokwi]\nversion = 1\nfirmware = "firmware.uf2"\n'
+        + ('elf = "firmware.elf"\n' if has_elf else "")
+    )
+    return {
+        "session_id": session_id,
+        "diagram_json": diagram,
+        "wokwi_toml": wokwi_toml,
+        "uf2_url": f"/api/artifacts/{session_id}/firmware.uf2",
+        "elf_url": f"/api/artifacts/{session_id}/firmware.elf" if has_elf else None,
+    }

@@ -4,11 +4,12 @@
     "pico": {
       "type": "wokwi-pi-pico",
       "label": "Raspberry Pi Pico",
-      "pins": ["GP0","GP1","GP2","GP3","GP4","GP5","GP6","GP7","GP8","GP9","GP10","GP11","GP12","GP13","GP14","GP15","GP16","GP17","GP18","GP19","GP20","GP21","GP22","GP26","GP27","GP28","GND","3V3","VBUS","VSYS","RUN","GP25_LED"]
+      "pins": ["GP0","GP1","GP2","GP3","GP4","GP5","GP6","GP7","GP8","GP9","GP10","GP11","GP12","GP13","GP14","GP15","GP16","GP17","GP18","GP19","GP20","GP21","GP22","GP26","GP27","GP28","GND.1","GND.2","GND.3","GND.4","GND.5","GND.6","GND.7","GND.8","3V3","3V3_EN","VBUS","VSYS","ADC_VREF","RUN","TP4","TP5","GP25_LED"]
     },
     "bme280": {
-      "type": "wokwi-bme280",
-      "label": "BME280 T/H/P sensor",
+      "_note": "Wokwi has no native BME280 part as of 2026-04. board-bmp180 (T+P, no humidity) is the closest accepted stand-in so the diagram validates; the firmware still speaks BME280 protocol so live sensor reads will not match.",
+      "type": "board-bmp180",
+      "label": "BME280 T/H/P sensor (sim stand-in: BMP180)",
       "pins": ["VCC","GND","SCL","SDA"],
       "default_i2c_address": "0x76"
     },

@@ -63,6 +63,7 @@ class DesignState(BaseModel):
     build_stdout: str = ""
     build_success: bool = False
     uf2_artifact_path: str | None = None
+    elf_artifact_path: str | None = None
     simulate_log: str = ""
     simulate_mode: Literal["fixture", "live"] = "fixture"
     active_agent: AgentName | None = None
