@@ -32,6 +32,7 @@ from app.schemas.state import (
 from app.simulate.runner import run_simulation
 
 from .event_bus import emit
+from .metrics import finalize_metrics, instrumented
 
 AGENT_PANELS: dict[AgentName, str] = {
     "supervisor": "top-left",
@@ -161,6 +162,7 @@ def _finalize_pending(agent: AgentName) -> None:
         _activity(agent, key, label, "done")
 
 
+@instrumented("supervisor")
 async def _node_supervisor(state: DesignState) -> DesignState:
     """Decompose the prompt into feature specs the rest of the pipeline branches on."""
 
@@ -191,6 +193,7 @@ async def _node_supervisor(state: DesignState) -> DesignState:
     return state
 
 
+@instrumented("requirements")
 async def _node_requirements(state: DesignState) -> DesignState:
     state.active_agent = "requirements_parser"
     t = _agent_start("requirements_parser")
@@ -265,6 +268,7 @@ def _route_to_feature_pipelines(state: DesignState):
     return []
 
 
+@instrumented("feature_pipeline")
 async def _node_feature_pipeline(state: DesignState) -> dict:
     """One feature's pinout -> peripheral -> wiring, run in parallel with sibling Sends.
 
@@ -429,6 +433,7 @@ async def _node_feature_pipeline(state: DesignState) -> dict:
     }
 
 
+@instrumented("join_features")
 async def _node_join_features(state: DesignState) -> DesignState:
     """Aggregate all feature_outputs back into the top-level design fields.
 
@@ -450,6 +455,7 @@ async def _node_join_features(state: DesignState) -> DesignState:
     return state
 
 
+@instrumented("clocks")
 async def _node_clocks(state: DesignState) -> DesignState:
     state.active_agent = "clock_configurator"
     t = _agent_start("clock_configurator")
@@ -479,6 +485,7 @@ async def _node_clocks(state: DesignState) -> DesignState:
     return state
 
 
+@instrumented("errata")
 async def _node_errata(state: DesignState) -> DesignState:
     state.active_agent = "errata_checker"
     t = _agent_start("errata_checker")
@@ -514,6 +521,7 @@ async def _node_errata(state: DesignState) -> DesignState:
     return state
 
 
+@instrumented("code")
 async def _node_code(state: DesignState) -> DesignState:
     state.active_agent = "code_composer"
     t = _agent_start("code_composer")
@@ -569,6 +577,7 @@ async def _node_code(state: DesignState) -> DesignState:
     return state
 
 
+@instrumented("build")
 async def _node_build(state: DesignState) -> DesignState:
     emit({"type": "build_start"})
     files = state.generated_files or [
@@ -600,6 +609,7 @@ async def _node_build(state: DesignState) -> DesignState:
     return state
 
 
+@instrumented("simulate")
 async def _node_simulate(state: DesignState) -> DesignState:
     emit({"type": "simulate_start"})
     sim = await run_simulation(state.uf2_artifact_path, state.wokwi_diagram)
@@ -608,6 +618,7 @@ async def _node_simulate(state: DesignState) -> DesignState:
     state.simulate_log = sim.log
     state.simulate_mode = sim.mode  # type: ignore[assignment]
     state.pipeline_complete = True
+    finalize_metrics(state)
     return state
 
 
@@ -669,6 +680,7 @@ def _route_after_errata(state: DesignState):
     return "render_diagram"
 
 
+@instrumented("render_diagram")
 async def _node_render_diagram(state: DesignState) -> DesignState:
     """Render the merged Wokwi diagram.json from all per-feature wires.
 
