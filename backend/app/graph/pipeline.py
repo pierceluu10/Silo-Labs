@@ -520,13 +520,20 @@ async def _node_code(state: DesignState) -> DesignState:
     assert state.requirements is not None
     _activity("code_composer", "includes", "Drafting includes + pin macros", "done")
 
+    # Combined retry hint: build failure + critical errata workaround.
+    hint_chunks: list[str] = []
+    if state.last_errata_hint:
+        hint_chunks.append("Critical errata workarounds:\n" + state.last_errata_hint)
+    if state.last_build_error_hint:
+        hint_chunks.append("Previous build stderr:\n" + state.last_build_error_hint)
+    combined_hint = "\n\n".join(hint_chunks) if hint_chunks else None
     files = await compose_code(
         state.requirements,
         list(state.pin_assignments),
         list(state.clock_configs),
         list(state.register_writes),
         target_mcu=state.target_mcu,
-        build_error_hint=state.last_build_error_hint,
+        build_error_hint=combined_hint,
     )
     state.generated_files = files
     main_c, cmake = split_main_and_cmake(files)
@@ -603,6 +610,64 @@ async def _node_simulate(state: DesignState) -> DesignState:
     return state
 
 
+_MAX_CODE_RETRIES = 1
+_MAX_ERRATA_RETRIES = 1
+
+
+def _route_after_build(state: DesignState):
+    """Conditional edge after build: success -> simulate, failure -> retry code (max 1)."""
+
+    if state.build_success:
+        return "simulate"
+    if state.code_retries < _MAX_CODE_RETRIES:
+        # bump the retry counter so the next failure goes to simulate (giving up)
+        state.code_retries += 1
+        emit(
+            {
+                "type": "agent_activity",
+                "agent": "code_composer",
+                "key": "build-retry",
+                "label": (
+                    f"Build failed — re-composing with stderr context "
+                    f"(retry {state.code_retries}/{_MAX_CODE_RETRIES})"
+                ),
+                "status": "active",
+            }
+        )
+        return "code"
+    return "simulate"
+
+
+def _route_after_errata(state: DesignState):
+    """Conditional edge after errata: critical warning -> rerun feature pipelines (max 1)."""
+
+    critical = [w for w in state.errata_warnings if w.severity == "critical"]
+    if critical and state.errata_retries < _MAX_ERRATA_RETRIES:
+        state.errata_retries += 1
+        # Stash a hint that the next code_composer pass should respect the
+        # workaround; the per-feature peripheral re-run uses fresh prompts but
+        # the hint flows through to code_composer via state.last_errata_hint.
+        state.last_errata_hint = "; ".join(
+            f"{w.errata_id}: {w.workaround or w.description}" for w in critical
+        )[:1500]
+        emit(
+            {
+                "type": "agent_activity",
+                "agent": "errata_checker",
+                "key": "rerun",
+                "label": (
+                    f"Critical errata — re-running feature pipelines with workaround context "
+                    f"(retry {state.errata_retries}/{_MAX_ERRATA_RETRIES})"
+                ),
+                "status": "active",
+            }
+        )
+        # Reset the per-feature outputs so the rerun doesn't double-merge.
+        state.feature_outputs = {}
+        return "feature_pipeline_rerun"
+    return "render_diagram"
+
+
 async def _node_render_diagram(state: DesignState) -> DesignState:
     """Render the merged Wokwi diagram.json from all per-feature wires.
 
@@ -653,10 +718,24 @@ def build_pipeline():
     g.add_edge("feature_pipeline", "join_features")
     g.add_edge("join_features", "clocks")
     g.add_edge("clocks", "errata")
-    g.add_edge("errata", "render_diagram")
+    # Errata may route back to a fresh fan-out if any warning is `critical`.
+    g.add_conditional_edges(
+        "errata",
+        _route_after_errata,
+        {
+            "render_diagram": "render_diagram",
+            # Re-fan-out via the same Send routing helper as the original branch.
+            "feature_pipeline_rerun": "requirements",
+        },
+    )
     g.add_edge("render_diagram", "code")
     g.add_edge("code", "build")
-    g.add_edge("build", "simulate")
+    # Build failure -> retry code with stderr hint (max 1).
+    g.add_conditional_edges(
+        "build",
+        _route_after_build,
+        {"simulate": "simulate", "code": "code"},
+    )
     g.add_edge("simulate", END)
 
     return g.compile()
