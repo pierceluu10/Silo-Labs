@@ -15,6 +15,14 @@ export type SSEEvent =
   | { type: "agent_reasoning"; agent: AgentName; panel: Panel; delta: string }
   | { type: "agent_complete"; agent: AgentName; duration_ms: number }
   | {
+      type: "agent_activity";
+      agent: AgentName;
+      key: string;
+      label: string;
+      status: "pending" | "active" | "done";
+      value?: string;
+    }
+  | {
       type: "assign_pin";
       pin_number: number;
       function: string;
@@ -63,6 +71,13 @@ export type SSEEvent =
   | { type: "build_failure"; error: string; stderr: string }
   | { type: "simulate_start" }
   | { type: "simulate_output"; line: string }
+  | {
+      type: "device_part_info";
+      device: string;
+      wokwi_part: string;
+      is_stub: boolean;
+      note: string;
+    }
   | { type: "pipeline_complete"; session_id: string; duration_ms: number }
   | { type: "error"; message: string; recoverable: boolean };
 

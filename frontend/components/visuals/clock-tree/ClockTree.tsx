@@ -1,13 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  Background,
-  Controls,
-  ReactFlow,
-  type Edge,
-  type Node,
-} from "@xyflow/react";
+import { Background, ReactFlow, type Edge, type Node } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useSiloStore } from "@/lib/store";
 
@@ -107,19 +101,30 @@ export function ClockTree() {
     return { nodes, edges };
   }, [topology, freqByDomain, activeEdges]);
 
+  // Defer the ReactFlow render until topology loads so its `fitView` runs
+  // against the real nodes (otherwise it fits to nothing on mount and the
+  // viewport stays empty). minHeight guards against any 0-height parent.
+  if (!topology) {
+    return (
+      <div className="h-full w-full flex items-center justify-center text-[10px] text-steel font-mono">
+        Loading clock topology…
+      </div>
+    );
+  }
+
   return (
-    <div className="h-full w-full">
+    <div className="h-full w-full" style={{ minHeight: 220 }}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
         fitView
+        fitViewOptions={{ padding: 0.15 }}
         proOptions={{ hideAttribution: true }}
         panOnDrag={false}
         zoomOnScroll={false}
         nodesDraggable={false}
       >
         <Background color="var(--color-charcoal)" gap={16} />
-        <Controls showZoom={false} showInteractive={false} />
       </ReactFlow>
     </div>
   );

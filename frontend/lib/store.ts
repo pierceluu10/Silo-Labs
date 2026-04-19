@@ -42,10 +42,27 @@ export interface ErrataEvent {
   workaround: string | null;
 }
 
+export interface DevicePartInfo {
+  device: string;
+  wokwi_part: string;
+  is_stub: boolean;
+  note: string;
+}
+
+export interface ActivityItem {
+  key: string;
+  label: string;
+  status: "pending" | "active" | "done";
+  value?: string;
+}
+
+export type FullscreenTarget = AgentName | "code" | null;
+
 export interface SiloState {
   sessionId: string | null;
   activeAgent: AgentName | null;
   agentReasoning: Record<AgentName, string>;
+  activities: Record<AgentName, ActivityItem[]>;
   pins: PinEvent[];
   clocks: ClockEvent[];
   registers: RegisterEvent[];
@@ -55,8 +72,11 @@ export interface SiloState {
   buildLog: string[];
   simulateLog: string[];
   uf2Url: string | null;
+  devicePart: DevicePartInfo | null;
   pipelineComplete: boolean;
   errorMessage: string | null;
+  fullscreen: FullscreenTarget;
+  setFullscreen: (target: FullscreenTarget) => void;
   apply: (event: SSEEvent) => void;
   reset: () => void;
 }
@@ -71,10 +91,21 @@ const emptyReasoning = (): Record<AgentName, string> => ({
   code_composer: "",
 });
 
+const emptyActivities = (): Record<AgentName, ActivityItem[]> => ({
+  requirements_parser: [],
+  pinout_resolver: [],
+  clock_configurator: [],
+  peripheral_configurator: [],
+  errata_checker: [],
+  wokwi_diagram_generator: [],
+  code_composer: [],
+});
+
 const initial = () => ({
   sessionId: null as string | null,
   activeAgent: null as AgentName | null,
   agentReasoning: emptyReasoning(),
+  activities: emptyActivities(),
   pins: [] as PinEvent[],
   clocks: [] as ClockEvent[],
   registers: [] as RegisterEvent[],
@@ -84,13 +115,16 @@ const initial = () => ({
   buildLog: [] as string[],
   simulateLog: [] as string[],
   uf2Url: null as string | null,
+  devicePart: null as DevicePartInfo | null,
   pipelineComplete: false,
   errorMessage: null as string | null,
+  fullscreen: null as FullscreenTarget,
 });
 
 export const useSiloStore = create<SiloState>((set) => ({
   ...initial(),
   reset: () => set(initial()),
+  setFullscreen: (target) => set({ fullscreen: target }),
   apply: (event) =>
     set((state) => {
       switch (event.type) {
@@ -104,6 +138,20 @@ export const useSiloStore = create<SiloState>((set) => ({
           const prev = state.agentReasoning[event.agent] ?? "";
           return {
             agentReasoning: { ...state.agentReasoning, [event.agent]: prev + event.delta },
+          };
+        }
+        case "agent_activity": {
+          const prev = state.activities[event.agent] ?? [];
+          const idx = prev.findIndex((a) => a.key === event.key);
+          const next: ActivityItem = {
+            key: event.key,
+            label: event.label,
+            status: event.status,
+            value: event.value,
+          };
+          const updated = idx >= 0 ? prev.map((a, i) => (i === idx ? next : a)) : [...prev, next];
+          return {
+            activities: { ...state.activities, [event.agent]: updated },
           };
         }
         case "assign_pin":
@@ -138,6 +186,15 @@ export const useSiloStore = create<SiloState>((set) => ({
           return { errorMessage: event.error };
         case "simulate_output":
           return { simulateLog: [...state.simulateLog, event.line] };
+        case "device_part_info":
+          return {
+            devicePart: {
+              device: event.device,
+              wokwi_part: event.wokwi_part,
+              is_stub: event.is_stub,
+              note: event.note,
+            },
+          };
         case "pipeline_complete":
           return { pipelineComplete: true };
         case "error":

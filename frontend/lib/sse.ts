@@ -1,12 +1,17 @@
 import type { SSEEvent, SSEEventType } from "@/types/sse";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+export function getApiBase(): string {
+  return process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+}
+
+const API_BASE = getApiBase();
 
 const EVENT_TYPES: readonly SSEEventType[] = [
   "session_ready",
   "agent_start",
   "agent_reasoning",
   "agent_complete",
+  "agent_activity",
   "assign_pin",
   "configure_clock",
   "set_register",
@@ -20,6 +25,7 @@ const EVENT_TYPES: readonly SSEEventType[] = [
   "build_failure",
   "simulate_start",
   "simulate_output",
+  "device_part_info",
   "pipeline_complete",
   "error",
 ] as const;

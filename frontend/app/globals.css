@@ -50,16 +50,74 @@ body {
   color: var(--color-snow);
 }
 
-@keyframes accent-glow {
+/* Pulsing dot used by active agent indicators + active activity rows. */
+@keyframes siloPulse {
   0%,
   100% {
-    filter: drop-shadow(0 0 2px var(--color-accent));
+    transform: scale(1);
+    opacity: 1;
   }
   50% {
-    filter: drop-shadow(0 0 8px var(--color-accent));
+    transform: scale(1.18);
+    opacity: 0.55;
   }
 }
 
-.accent-glow {
-  animation: accent-glow 2.4s ease-in-out infinite;
+/* Animated stroke-dash flow used by FlowTraces (active-agent → centre). */
+@keyframes siloDashFlow {
+  to {
+    stroke-dashoffset: -28;
+  }
+}
+
+/* Thin, theme-aware scrollbar for agent activity panes. */
+.silo-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-charcoal) transparent;
+}
+.silo-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.silo-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-charcoal);
+  border-radius: 3px;
+}
+.silo-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.hatched-accent {
+  position: relative;
+  display: inline-block;
+  color: var(--color-accent);
+  font-style: italic;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  line-height: inherit;
+  isolation: isolate;
+  text-rendering: geometricPrecision;
+}
+
+/* Diagonal hatch clipped to the same glyphs as the headline (em offset tracks font size). */
+.hatched-accent::before {
+  content: attr(data-text);
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: -1;
+  transform: translate3d(0.1em, 0.14em, 0);
+  pointer-events: none;
+  font: inherit;
+  font-style: italic;
+  white-space: nowrap;
+  background-image: repeating-linear-gradient(
+    135deg,
+    rgba(230, 57, 70, 0.42) 0 1px,
+    transparent 1px 5px
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  opacity: 0.92;
 }
