@@ -5,6 +5,7 @@ import time
 import uuid
 
 from langgraph.graph import END, StateGraph
+from langgraph.types import Send
 
 from app.agents.clock_configurator import configure_clocks
 from app.agents.code_composer import compose_code, split_main_and_cmake
@@ -19,8 +20,12 @@ from app.schemas.state import (
     AgentName,
     ClockConfigRecord,
     DesignState,
+    FeatureOutputs,
+    FeatureSpec,
     PinAssignmentRecord,
     RegisterWriteRecord,
+    Requirements,
+    RunPlan,
     WireConnectionRecord,
 )
 from app.simulate.runner import run_simulation
@@ -199,19 +204,104 @@ async def _node_requirements(state: DesignState) -> DesignState:
     return state
 
 
-async def _node_pinout(state: DesignState) -> DesignState:
+def _feature_to_requirements(feature: FeatureSpec, base: Requirements | None) -> Requirements:
+    """Build a Requirements object scoped to one feature for the per-feature agents."""
+
+    return Requirements(
+        peripheral_type=feature.peripheral_family,
+        device_name=feature.device_name,
+        device_address=base.device_address if base else None,
+        baud_rate=base.baud_rate if base else None,
+        description=feature.intent,
+    )
+
+
+def _route_to_feature_pipelines(state: DesignState):
+    """Conditional edge: fan out one Send per feature in the plan.
+
+    If the supervisor produced zero features (very simple prompts) we fall back
+    to a single Send carrying the parsed requirements as an implicit feature so
+    downstream agents always have something to work on.
+    """
+
+    plan = state.run_plan
+    if plan and plan.features:
+        return [
+            Send(
+                "feature_pipeline",
+                {
+                    "session_id": state.session_id,
+                    "user_prompt": state.user_prompt,
+                    "target_mcu": state.target_mcu,
+                    "requirements": state.requirements,
+                    "current_feature_id": f.id,
+                    "run_plan": plan,
+                },
+            )
+            for f in plan.features
+        ]
+    # Synthetic single feature so the join + downstream stages don't see an empty plan.
+    if state.requirements is not None:
+        synthetic = FeatureSpec(
+            id="default",
+            peripheral_family=state.requirements.peripheral_type,
+            device_name=state.requirements.device_name,
+            intent=state.requirements.description,
+        )
+        return [
+            Send(
+                "feature_pipeline",
+                {
+                    "session_id": state.session_id,
+                    "user_prompt": state.user_prompt,
+                    "target_mcu": state.target_mcu,
+                    "requirements": state.requirements,
+                    "current_feature_id": synthetic.id,
+                    "run_plan": RunPlan(features=[synthetic]),
+                },
+            )
+        ]
+    return []
+
+
+async def _node_feature_pipeline(state: DesignState) -> dict:
+    """One feature's pinout -> peripheral -> wiring, run in parallel with sibling Sends.
+
+    Writes results into ``state.feature_outputs[<feature_id>]`` (the merge
+    reducer on that field handles concurrent writes).
+    """
+
+    feature_id = state.current_feature_id or "default"
+    plan = state.run_plan
+    feature: FeatureSpec | None = None
+    if plan:
+        feature = next((f for f in plan.features if f.id == feature_id), None)
+    if feature is None and state.requirements is not None:
+        feature = FeatureSpec(
+            id=feature_id,
+            peripheral_family=state.requirements.peripheral_type,
+            device_name=state.requirements.device_name,
+            intent=state.requirements.description,
+        )
+    if feature is None:
+        # Nothing to do — return an empty FeatureOutputs so the reducer still merges.
+        return {"feature_outputs": {feature_id: FeatureOutputs(feature_id=feature_id)}}
+
+    requirements = _feature_to_requirements(feature, state.requirements)
+
+    # ---- Pinout (per feature) -------------------------------------------------
     state.active_agent = "pinout_resolver"
-    t = _agent_start("pinout_resolver")
+    t_pin = _agent_start("pinout_resolver")
     _emit_pending("pinout_resolver")
-    assert state.requirements is not None
     _activity(
         "pinout_resolver",
         "read-datasheet",
-        f"Reading {state.requirements.device_name} datasheet pinout",
+        f"[{feature.id}] Reading {feature.device_name} datasheet pinout",
         "done",
     )
-    pins = await resolve_pinout(state.requirements)
-    for p in pins:
+    pins_models = await resolve_pinout(requirements)
+    pin_records: list[PinAssignmentRecord] = []
+    for p in pins_models:
         emit(
             {
                 "type": "assign_pin",
@@ -224,15 +314,138 @@ async def _node_pinout(state: DesignState) -> DesignState:
         )
         _activity(
             "pinout_resolver",
-            f"pin-{p.pin_number}",
-            f"Allocating GP{p.pin_number} → {p.peripheral_instance} {p.label}",
+            f"pin-{feature.id}-{p.pin_number}",
+            f"[{feature.id}] GP{p.pin_number} → {p.peripheral_instance} {p.label}",
             "done",
         )
-    inst = pins[0].peripheral_instance if pins else "—"
-    _activity("pinout_resolver", "pick-instance", f"Selected peripheral instance: {inst}", "done")
-    _activity("pinout_resolver", "validate-no-uart-debug", "No GP0 / GP1 collisions detected", "done")
-    state.pin_assignments = [PinAssignmentRecord.model_validate(p.model_dump()) for p in pins]
-    _agent_complete("pinout_resolver", t)
+        pin_records.append(PinAssignmentRecord.model_validate(p.model_dump()))
+    inst = pins_models[0].peripheral_instance if pins_models else "—"
+    _activity(
+        "pinout_resolver",
+        f"pick-instance-{feature.id}",
+        f"[{feature.id}] Selected instance: {inst}",
+        "done",
+    )
+    _activity(
+        "pinout_resolver",
+        f"validate-no-uart-debug-{feature.id}",
+        f"[{feature.id}] No GP0/GP1 collisions",
+        "done",
+    )
+    _agent_complete("pinout_resolver", t_pin)
+
+    # ---- Peripheral config (per feature) -------------------------------------
+    state.active_agent = "peripheral_configurator"
+    t_per = _agent_start("peripheral_configurator")
+    _emit_pending("peripheral_configurator")
+    _activity(
+        "peripheral_configurator",
+        f"read-svd-{feature.id}",
+        f"[{feature.id}] Reading SVD for {feature.peripheral_family}",
+        "done",
+    )
+    writes_models = await configure_peripheral(requirements)
+    register_records: list[RegisterWriteRecord] = []
+    if not writes_models:
+        _activity(
+            "peripheral_configurator",
+            f"plan-fields-{feature.id}",
+            f"[{feature.id}] Using pico-sdk high-level APIs (no direct register writes)",
+            "done",
+        )
+    else:
+        _activity(
+            "peripheral_configurator",
+            f"plan-fields-{feature.id}",
+            f"[{feature.id}] Planning {len(writes_models)} register field writes",
+            "done",
+        )
+        for w in writes_models:
+            emit(
+                {
+                    "type": "set_register",
+                    "peripheral": w.peripheral,
+                    "register": w.register,
+                    "address": w.address,
+                    "field_name": w.field_name,
+                    "value": w.value,
+                    "bit_offset": w.bit_offset,
+                    "bit_width": w.bit_width,
+                    "human_explanation": w.human_explanation,
+                }
+            )
+            _activity(
+                "peripheral_configurator",
+                f"reg-{feature.id}-{w.peripheral}-{w.register}-{w.field_name}",
+                f"[{feature.id}] {w.peripheral}.{w.register}.{w.field_name} = {w.value}",
+                "done",
+            )
+            register_records.append(RegisterWriteRecord.model_validate(w.model_dump()))
+    _agent_complete("peripheral_configurator", t_per)
+
+    # ---- Wiring (per feature, wires only — diagram render happens after join) -
+    state.active_agent = "wokwi_diagram_generator"
+    t_wir = _agent_start("wokwi_diagram_generator")
+    _emit_pending("wokwi_diagram_generator")
+    _activity(
+        "wokwi_diagram_generator",
+        f"select-part-{feature.id}",
+        f"[{feature.id}] Selecting Wokwi part for {feature.device_name}",
+        "done",
+    )
+    wires_models, _diagram = await generate_diagram(requirements, list(pins_models))
+    wire_records: list[WireConnectionRecord] = []
+    for w in wires_models:
+        emit(
+            {
+                "type": "add_wire",
+                "from_component": w.from_component,
+                "from_pin": w.from_pin,
+                "to_component": w.to_component,
+                "to_pin": w.to_pin,
+                "color": w.color.value,
+            }
+        )
+        wire_records.append(WireConnectionRecord.model_validate(w.model_dump()))
+    _activity(
+        "wokwi_diagram_generator",
+        f"wire-signals-{feature.id}",
+        f"[{feature.id}] Wired {len(wires_models)} signal lines",
+        "done",
+    )
+    _finalize_pending("wokwi_diagram_generator")
+    _agent_complete("wokwi_diagram_generator", t_wir)
+
+    return {
+        "feature_outputs": {
+            feature.id: FeatureOutputs(
+                feature_id=feature.id,
+                pin_assignments=pin_records,
+                register_writes=register_records,
+                wires=wire_records,
+            )
+        }
+    }
+
+
+async def _node_join_features(state: DesignState) -> DesignState:
+    """Aggregate all feature_outputs back into the top-level design fields.
+
+    Runs once after every Send branch from ``_route_to_feature_pipelines``
+    has completed (LangGraph naturally fans in here).
+    """
+
+    pin_assignments: list[PinAssignmentRecord] = []
+    register_writes: list[RegisterWriteRecord] = []
+    wires: list[WireConnectionRecord] = []
+    for fid in sorted(state.feature_outputs):
+        fo = state.feature_outputs[fid]
+        pin_assignments.extend(fo.pin_assignments)
+        register_writes.extend(fo.register_writes)
+        wires.extend(fo.wires)
+    state.pin_assignments = pin_assignments
+    state.register_writes = register_writes
+    state.wires = wires
     return state
 
 
@@ -262,52 +475,6 @@ async def _node_clocks(state: DesignState) -> DesignState:
     _finalize_pending("clock_configurator")
     state.clock_configs = [ClockConfigRecord.model_validate(c.model_dump()) for c in clocks]
     _agent_complete("clock_configurator", t)
-    return state
-
-
-async def _node_peripheral(state: DesignState) -> DesignState:
-    state.active_agent = "peripheral_configurator"
-    t = _agent_start("peripheral_configurator")
-    _emit_pending("peripheral_configurator")
-    assert state.requirements is not None
-    _activity(
-        "peripheral_configurator",
-        "read-svd",
-        f"Reading SVD for {state.requirements.peripheral_type}",
-        "done",
-    )
-    writes = await configure_peripheral(state.requirements)
-    if not writes:
-        _activity(
-            "peripheral_configurator",
-            "plan-fields",
-            "Using pico-sdk high-level APIs (no direct register writes)",
-            "done",
-        )
-    else:
-        _activity("peripheral_configurator", "plan-fields", f"Planning {len(writes)} register field writes", "done")
-        for w in writes:
-            emit(
-                {
-                    "type": "set_register",
-                    "peripheral": w.peripheral,
-                    "register": w.register,
-                    "address": w.address,
-                    "field_name": w.field_name,
-                    "value": w.value,
-                    "bit_offset": w.bit_offset,
-                    "bit_width": w.bit_width,
-                    "human_explanation": w.human_explanation,
-                }
-            )
-            _activity(
-                "peripheral_configurator",
-                f"reg-{w.peripheral}-{w.register}-{w.field_name}",
-                f"{w.peripheral}.{w.register}.{w.field_name} = {w.value}",
-                "done",
-            )
-    state.register_writes = [RegisterWriteRecord.model_validate(w.model_dump()) for w in writes]
-    _agent_complete("peripheral_configurator", t)
     return state
 
 
@@ -343,57 +510,6 @@ async def _node_errata(state: DesignState) -> DesignState:
         _activity("errata_checker", "mark-workarounds", "No applicable errata for this design", "done")
     state.errata_warnings = warnings
     _agent_complete("errata_checker", t)
-    return state
-
-
-async def _node_wokwi(state: DesignState) -> DesignState:
-    state.active_agent = "wokwi_diagram_generator"
-    t = _agent_start("wokwi_diagram_generator")
-    _emit_pending("wokwi_diagram_generator")
-    assert state.requirements is not None
-    from app.knowledge.graph import get_graph as _get_graph
-
-    device_key = state.requirements.device_name.lower()
-    spec = _get_graph().get_wokwi_component(device_key)
-    if spec is not None:
-        _activity(
-            "wokwi_diagram_generator",
-            "select-part",
-            f"Wokwi part for {device_key}: {spec.get('type', '?')}",
-            "done",
-        )
-    wires, diagram = await generate_diagram(state.requirements, list(state.pin_assignments))
-    for w in wires:
-        emit(
-            {
-                "type": "add_wire",
-                "from_component": w.from_component,
-                "from_pin": w.from_pin,
-                "to_component": w.to_component,
-                "to_pin": w.to_pin,
-                "color": w.color.value,
-            }
-        )
-    _activity(
-        "wokwi_diagram_generator",
-        "wire-signals",
-        f"Wired {len(wires)} signal lines",
-        "done",
-    )
-    _finalize_pending("wokwi_diagram_generator")
-    if spec is not None:
-        emit(
-            {
-                "type": "device_part_info",
-                "device": device_key,
-                "wokwi_part": spec.get("type", ""),
-                "is_stub": "_note" in spec,
-                "note": spec.get("_note", ""),
-            }
-        )
-    state.wires = [WireConnectionRecord.model_validate(w.model_dump()) for w in wires]
-    state.wokwi_diagram = diagram
-    _agent_complete("wokwi_diagram_generator", t)
     return state
 
 
@@ -487,27 +603,58 @@ async def _node_simulate(state: DesignState) -> DesignState:
     return state
 
 
+async def _node_render_diagram(state: DesignState) -> DesignState:
+    """Render the merged Wokwi diagram.json from all per-feature wires.
+
+    The per-feature pipeline nodes only emit wire records (and per-feature
+    `add_wire` SSE events). Building the actual diagram JSON is global because
+    Wokwi expects exactly one diagram per project.
+    """
+
+    if not state.wires or state.requirements is None:
+        return state
+    from app.agents.wokwi_diagram_generator import _render_diagram_json
+    from app.knowledge.graph import get_graph
+
+    device_key = state.requirements.device_name.lower()
+    diagram = _render_diagram_json(device_key, [w for w in state.wires])
+    state.wokwi_diagram = diagram
+    spec = get_graph().get_wokwi_component(device_key)
+    if spec is not None:
+        emit(
+            {
+                "type": "device_part_info",
+                "device": device_key,
+                "wokwi_part": spec.get("type", ""),
+                "is_stub": "_note" in spec,
+                "note": spec.get("_note", ""),
+            }
+        )
+    return state
+
+
 def build_pipeline():
     g: StateGraph = StateGraph(DesignState)
     g.add_node("supervisor", _node_supervisor)
     g.add_node("requirements", _node_requirements)
-    g.add_node("pinout", _node_pinout)
+    g.add_node("feature_pipeline", _node_feature_pipeline)
+    g.add_node("join_features", _node_join_features)
     g.add_node("clocks", _node_clocks)
-    g.add_node("peripheral", _node_peripheral)
     g.add_node("errata", _node_errata)
-    g.add_node("wokwi", _node_wokwi)
+    g.add_node("render_diagram", _node_render_diagram)
     g.add_node("code", _node_code)
     g.add_node("build", _node_build)
     g.add_node("simulate", _node_simulate)
 
     g.set_entry_point("supervisor")
     g.add_edge("supervisor", "requirements")
-    g.add_edge("requirements", "pinout")
-    g.add_edge("pinout", "clocks")
-    g.add_edge("clocks", "peripheral")
-    g.add_edge("peripheral", "errata")
-    g.add_edge("errata", "wokwi")
-    g.add_edge("wokwi", "code")
+    # Fan out: one Send per feature -> feature_pipeline (parallel branches).
+    g.add_conditional_edges("requirements", _route_to_feature_pipelines, ["feature_pipeline"])
+    g.add_edge("feature_pipeline", "join_features")
+    g.add_edge("join_features", "clocks")
+    g.add_edge("clocks", "errata")
+    g.add_edge("errata", "render_diagram")
+    g.add_edge("render_diagram", "code")
     g.add_edge("code", "build")
     g.add_edge("build", "simulate")
     g.add_edge("simulate", END)

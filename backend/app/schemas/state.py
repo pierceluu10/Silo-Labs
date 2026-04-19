@@ -1,10 +1,27 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
 from .tools import AddWire, AssignPin, ConfigureClock, SetRegister
+
+
+def _merge_feature_outputs(
+    left: dict[str, "FeatureOutputs"], right: dict[str, "FeatureOutputs"]
+) -> dict[str, "FeatureOutputs"]:
+    """Reducer for parallel feature branches.
+
+    LangGraph dispatches one Send per feature; each branch writes
+    ``feature_outputs[feature_id] = …``. Without a reducer the parallel
+    writes would clobber each other; this dict-merge keeps both.
+    """
+
+    if not right:
+        return left
+    merged: dict[str, "FeatureOutputs"] = dict(left or {})
+    merged.update(right)
+    return merged
 
 AgentName = Literal[
     "supervisor",
@@ -115,7 +132,14 @@ class DesignState(BaseModel):
     target_mcu: str = Field(default="rp2040", description="Key into McuProfile registry.")
     run_plan: RunPlan | None = None
     requirements: Requirements | None = None
-    feature_outputs: dict[str, FeatureOutputs] = Field(default_factory=dict)
+    # Per-feature outputs are written from parallel sub-graph branches; a
+    # custom reducer merges concurrent writes instead of clobbering.
+    feature_outputs: Annotated[dict[str, FeatureOutputs], _merge_feature_outputs] = Field(
+        default_factory=dict
+    )
+    # Set by the supervisor's Send so each fan-out branch knows which feature
+    # it's currently working on. Defaults to None on the parent state.
+    current_feature_id: str | None = None
     pin_assignments: list[PinAssignmentRecord] = Field(default_factory=list)
     clock_configs: list[ClockConfigRecord] = Field(default_factory=list)
     register_writes: list[RegisterWriteRecord] = Field(default_factory=list)
