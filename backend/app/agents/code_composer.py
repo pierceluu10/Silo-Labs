@@ -107,10 +107,30 @@ async def compose_code(
         f"Produce the full project file tree."
     )
 
-    llm = sonnet(max_tokens=8192).with_structured_output(MultiFileProject)
+    # The MultiFileProject schema is larger than the legacy ComposedProject
+    # (variable-length files list, each with path/content/language). Sonnet
+    # occasionally truncates the tool_use args when the budget is tight; 12k
+    # leaves comfortable headroom for a 13 KB main.c + drivers + CMakeLists.
+    llm = sonnet(max_tokens=12_288).with_structured_output(MultiFileProject)
     result = await llm.ainvoke([SystemMessage(content=sys_msg), HumanMessage(content=user)])
     if not isinstance(result, MultiFileProject):
-        result = MultiFileProject.model_validate(result)
+        try:
+            result = MultiFileProject.model_validate(result)
+        except Exception:
+            # Single retry with an explicit shape reminder. RetryPolicy on the
+            # outer node also retries the whole call; this catches the common
+            # "empty tool_use args" case without burning a second LLM round.
+            nudge = HumanMessage(
+                content=(
+                    "Your previous reply did not match the schema. "
+                    "Return JSON with a top-level 'files' array containing "
+                    "at minimum {path: 'main.c', content: '...'} and "
+                    "{path: 'CMakeLists.txt', content: '...'}. No prose."
+                )
+            )
+            result = await llm.ainvoke([SystemMessage(content=sys_msg), HumanMessage(content=user), nudge])
+            if not isinstance(result, MultiFileProject):
+                result = MultiFileProject.model_validate(result)
 
     return [
         GeneratedFile(path=f.path, content=f.content, language=f.language)

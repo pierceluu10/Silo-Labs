@@ -32,7 +32,7 @@ from app.schemas.state import (
 from app.simulate.runner import run_simulation
 
 from .event_bus import emit
-from .metrics import finalize_metrics, instrumented
+from .metrics import finalize_metrics, instrumented, reset_aggregator
 
 AGENT_PANELS: dict[AgentName, str] = {
     "supervisor": "top-left",
@@ -775,6 +775,9 @@ def _runner_config(session_id: str) -> dict:
 
 async def run_pipeline(user_prompt: str, session_id: str | None = None) -> DesignState:
     sid = session_id or uuid.uuid4().hex
+    # Fresh metrics for this session — old aggregator entries (e.g. from a
+    # prior crashed run with the same id) are wiped so we don't double-count.
+    reset_aggregator(sid)
     state = DesignState(session_id=sid, user_prompt=user_prompt)
     pipeline = build_pipeline()
     result = await pipeline.ainvoke(state, _runner_config(sid))

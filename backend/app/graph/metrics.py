@@ -68,13 +68,42 @@ def record_llm_usage(input_tokens: int, output_tokens: int, model: str = "") -> 
     bag.add(input_tokens, output_tokens, model)
 
 
+def _coerce_state(state: Any) -> DesignState:
+    """LangGraph's Send hands nodes a raw dict instead of the Pydantic model;
+    coerce so attribute access in the wrapper works either way."""
+
+    if isinstance(state, DesignState):
+        return state
+    if isinstance(state, dict):
+        return DesignState.model_validate(state)
+    raise TypeError(f"Unexpected node state type: {type(state)!r}")
+
+
+# Process-wide aggregator keyed by session_id. We store metrics OUTSIDE
+# DesignState because LangGraph's parallel Send branches each get their own
+# state copy; without a reducer, branch-side metrics writes clobber each other
+# on merge. A module-level dict sidesteps that entirely — every node update is
+# appended atomically (Python's GIL covers the dict mutations we need).
+_AGGREGATORS: dict[str, RunMetrics] = {}
+
+
 def _ensure_metrics(state: DesignState) -> RunMetrics:
-    if state.metrics is None:
-        state.metrics = RunMetrics(
-            run_id=state.session_id,
+    sid = state.session_id
+    if sid not in _AGGREGATORS:
+        _AGGREGATORS[sid] = RunMetrics(
+            run_id=sid,
             started_at_ms=int(time.time() * 1000),
         )
-    return state.metrics
+    state.metrics = _AGGREGATORS[sid]
+    return _AGGREGATORS[sid]
+
+
+def get_aggregator(session_id: str) -> RunMetrics | None:
+    return _AGGREGATORS.get(session_id)
+
+
+def reset_aggregator(session_id: str) -> None:
+    _AGGREGATORS.pop(session_id, None)
 
 
 def instrumented(
@@ -88,7 +117,10 @@ def instrumented(
 
     def decorator(func: Callable[[DesignState], Awaitable[Any]]):
         @functools.wraps(func)
-        async def wrapper(state: DesignState):
+        async def wrapper(state: Any):
+            # Send-dispatched fan-outs hand us a raw dict; coerce back to
+            # DesignState so attribute access works.
+            state = _coerce_state(state)
             metrics = _ensure_metrics(state)
             started = int(time.time() * 1000)
             bag = _NodeTokenBag()
@@ -142,9 +174,8 @@ def _record(
     metrics.total_input_tokens += bag.input
     metrics.total_output_tokens += bag.output
     metrics.ended_at_ms = ended
-    metrics.total_cost_usd = sum(
-        _cost_for(bag.model or _settings_model(), n.input_tokens, n.output_tokens)
-        for n in metrics.nodes
+    metrics.total_cost_usd += _cost_for(
+        bag.model or _settings_model(), bag.input, bag.output
     )
     emit({"type": "metrics_update", "node": entry.model_dump()})
 
@@ -159,14 +190,16 @@ def _settings_model() -> str:
 def finalize_metrics(state: DesignState) -> None:
     """Compute parallel_speedup + emit the metrics_summary event at end-of-run."""
 
-    if state.metrics is None:
+    metrics = _AGGREGATORS.get(state.session_id)
+    if metrics is None:
         return
-    feature_nodes = [n for n in state.metrics.nodes if n.node == "feature_pipeline"]
+    feature_nodes = [n for n in metrics.nodes if n.node == "feature_pipeline"]
     if feature_nodes:
         sum_durations = sum(n.duration_ms for n in feature_nodes)
         # Wall-clock for the parallel block = max(end) - min(start) across feature branches.
         wall = max(n.ended_at_ms for n in feature_nodes) - min(n.started_at_ms for n in feature_nodes)
         wall = max(1, wall)
-        state.metrics.parallel_speedup = round(sum_durations / wall, 3)
-    state.metrics.ended_at_ms = int(time.time() * 1000)
-    emit({"type": "metrics_summary", "metrics": state.metrics.model_dump()})
+        metrics.parallel_speedup = round(sum_durations / wall, 3)
+    metrics.ended_at_ms = int(time.time() * 1000)
+    state.metrics = metrics
+    emit({"type": "metrics_summary", "metrics": metrics.model_dump()})
