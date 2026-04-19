@@ -4,8 +4,9 @@ import asyncio
 import time
 import uuid
 
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
-from langgraph.types import Send
+from langgraph.types import RetryPolicy, Send
 
 from app.agents.clock_configurator import configure_clocks
 from app.agents.code_composer import compose_code, split_main_and_cmake
@@ -698,16 +699,29 @@ async def _node_render_diagram(state: DesignState) -> DesignState:
     return state
 
 
+# Retry policy applied to every LLM-bearing node. Two attempts with a short
+# backoff catches transient rate-limits / structured-output decode hiccups
+# without hammering Anthropic on real failures.
+_LLM_RETRY = RetryPolicy(max_attempts=2, initial_interval=1.0, backoff_factor=2.0)
+
+
+# A process-wide checkpointer keyed by session_id. MemorySaver is enough for
+# dev (lost on restart); SqliteSaver is a one-line swap for production
+# (`langgraph-checkpoint-sqlite` dep + connect string).
+_CHECKPOINTER = MemorySaver()
+
+
 def build_pipeline():
     g: StateGraph = StateGraph(DesignState)
-    g.add_node("supervisor", _node_supervisor)
-    g.add_node("requirements", _node_requirements)
-    g.add_node("feature_pipeline", _node_feature_pipeline)
+    # LLM-bearing nodes get the retry policy; deterministic nodes don't need it.
+    g.add_node("supervisor", _node_supervisor, retry_policy=_LLM_RETRY)
+    g.add_node("requirements", _node_requirements, retry_policy=_LLM_RETRY)
+    g.add_node("feature_pipeline", _node_feature_pipeline, retry_policy=_LLM_RETRY)
     g.add_node("join_features", _node_join_features)
-    g.add_node("clocks", _node_clocks)
-    g.add_node("errata", _node_errata)
+    g.add_node("clocks", _node_clocks, retry_policy=_LLM_RETRY)
+    g.add_node("errata", _node_errata, retry_policy=_LLM_RETRY)
     g.add_node("render_diagram", _node_render_diagram)
-    g.add_node("code", _node_code)
+    g.add_node("code", _node_code, retry_policy=_LLM_RETRY)
     g.add_node("build", _node_build)
     g.add_node("simulate", _node_simulate)
 
@@ -738,13 +752,34 @@ def build_pipeline():
     )
     g.add_edge("simulate", END)
 
-    return g.compile()
+    return g.compile(checkpointer=_CHECKPOINTER)
+
+
+def _runner_config(session_id: str) -> dict:
+    """LangGraph thread config — the checkpointer keys snapshots by thread_id."""
+
+    return {"configurable": {"thread_id": session_id}}
 
 
 async def run_pipeline(user_prompt: str, session_id: str | None = None) -> DesignState:
-    state = DesignState(session_id=session_id or uuid.uuid4().hex, user_prompt=user_prompt)
+    sid = session_id or uuid.uuid4().hex
+    state = DesignState(session_id=sid, user_prompt=user_prompt)
     pipeline = build_pipeline()
-    result = await pipeline.ainvoke(state)
+    result = await pipeline.ainvoke(state, _runner_config(sid))
+    if isinstance(result, DesignState):
+        return result
+    return DesignState.model_validate(result)
+
+
+async def resume_pipeline(session_id: str) -> DesignState | None:
+    """Resume a previously-checkpointed run. Returns None if no checkpoint exists."""
+
+    pipeline = build_pipeline()
+    snapshot = pipeline.get_state(_runner_config(session_id))
+    if snapshot is None or not snapshot.values:
+        return None
+    # Passing None as the input tells LangGraph to continue from the saved state.
+    result = await pipeline.ainvoke(None, _runner_config(session_id))
     if isinstance(result, DesignState):
         return result
     return DesignState.model_validate(result)

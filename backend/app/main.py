@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from app.graph.event_bus import EventBus, set_bus
-from app.graph.pipeline import run_pipeline
+from app.graph.pipeline import resume_pipeline, run_pipeline
 from app.schemas.state import DesignState
 
 # Allow common dev hostnames; EventSource is strict about CORS.
@@ -113,6 +113,21 @@ async def firmware_elf(session_id: str):
         media_type="application/octet-stream",
         filename="firmware.elf",
     )
+
+
+@app.post("/api/sessions/{session_id}/resume")
+async def resume_session(session_id: str):
+    """Resume a previously-checkpointed run from where it stopped."""
+
+    result = await resume_pipeline(session_id)
+    if result is None:
+        return JSONResponse({"error": "no checkpoint for session"}, status_code=404)
+    _sessions[result.session_id] = result
+    return {
+        "session_id": result.session_id,
+        "pipeline_complete": result.pipeline_complete,
+        "build_success": result.build_success,
+    }
 
 
 @app.get("/api/sessions/{session_id}/files")
