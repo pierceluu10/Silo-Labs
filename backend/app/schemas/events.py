@@ -80,6 +80,18 @@ class ErrataWarningEvent(BaseModel):
     workaround: str | None = None
 
 
+ActivityStatus = Literal["pending", "active", "done"]
+
+
+class AgentActivity(BaseModel):
+    type: Literal["agent_activity"] = "agent_activity"
+    agent: AgentName
+    key: str
+    label: str
+    status: ActivityStatus
+    value: str | None = None
+
+
 class CodeChunk(BaseModel):
     type: Literal["code_chunk"] = "code_chunk"
     delta: str
@@ -142,6 +154,7 @@ SSEEvent = Annotated[
         SetRegisterEvent,
         AddWireEvent,
         ErrataWarningEvent,
+        AgentActivity,
         CodeChunk,
         CodeComplete,
         BuildStart,

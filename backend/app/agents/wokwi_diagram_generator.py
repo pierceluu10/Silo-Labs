@@ -27,6 +27,21 @@ from_component is always "pico" for RP2040 pins; to_component is the device key
 """
 
 
+def _normalize_pin_for_part(part_id: str, pin: str) -> str:
+    """Map common LLM-emitted pin aliases to valid Wokwi pin names.
+
+    The Pico's Wokwi part exposes 8 ground pads named GND.1..GND.8 — a bare
+    "GND" is invalid and will be rejected by wokwi-cli with
+    `[invalid-pin] Invalid pin "GND"`. Map it (and a few other slips) here.
+    """
+    if part_id == "pico":
+        if pin == "GND":
+            return "GND.1"
+        if pin in {"VCC", "3V3"}:
+            return "3V3"
+    return pin
+
+
 def _render_diagram_json(
     device: str,
     wires: list[AddWire],
@@ -47,7 +62,15 @@ def _render_diagram_json(
                 "attrs": {},
             }
         )
-    connections = [[f"{w.from_component}:{w.from_pin}", f"{w.to_component}:{w.to_pin}", w.color.value, []] for w in wires]
+    connections = [
+        [
+            f"{w.from_component}:{_normalize_pin_for_part(w.from_component, w.from_pin)}",
+            f"{w.to_component}:{_normalize_pin_for_part(w.to_component, w.to_pin)}",
+            w.color.value,
+            [],
+        ]
+        for w in wires
+    ]
     return {"version": 1, "author": "Silo Labs", "editor": "wokwi", "parts": parts, "connections": connections}
 
 
