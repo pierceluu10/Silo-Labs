@@ -4,7 +4,7 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, Field
 
-from .state import AgentName
+from .state import AgentName, FeatureSpec, GeneratedFile, NodeMetric, RunMetrics
 
 Panel = Literal["top-left", "top-right", "bottom-left", "bottom-right"]
 Severity = Literal["info", "warning", "critical"]
@@ -92,6 +92,35 @@ class AgentActivity(BaseModel):
     value: str | None = None
 
 
+class RunPlanEvent(BaseModel):
+    """Supervisor's decomposition of the prompt into parallel features."""
+
+    type: Literal["run_plan"] = "run_plan"
+    features: list[FeatureSpec]
+    rationale: str = ""
+
+
+class GeneratedFilesEvent(BaseModel):
+    """Multi-file project snapshot once code_composer has finished writing."""
+
+    type: Literal["generated_files"] = "generated_files"
+    files: list[GeneratedFile]
+
+
+class MetricsUpdateEvent(BaseModel):
+    """Incremental metric for one node execution."""
+
+    type: Literal["metrics_update"] = "metrics_update"
+    node: NodeMetric
+
+
+class MetricsSummaryEvent(BaseModel):
+    """Final aggregated metrics emitted alongside pipeline_complete."""
+
+    type: Literal["metrics_summary"] = "metrics_summary"
+    metrics: RunMetrics
+
+
 class CodeChunk(BaseModel):
     type: Literal["code_chunk"] = "code_chunk"
     delta: str
@@ -155,6 +184,10 @@ SSEEvent = Annotated[
         AddWireEvent,
         ErrataWarningEvent,
         AgentActivity,
+        RunPlanEvent,
+        GeneratedFilesEvent,
+        MetricsUpdateEvent,
+        MetricsSummaryEvent,
         CodeChunk,
         CodeComplete,
         BuildStart,
