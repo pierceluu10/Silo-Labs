@@ -7,6 +7,7 @@ import { useSiloStore } from "@/lib/store";
 import { AgentPanel } from "./AgentPanel";
 import { CentralHero } from "./CentralHero";
 import { FullscreenOverlay } from "./FullscreenOverlay";
+import { PlanPanel } from "./PlanPanel";
 import { WorkspacePromptHeader } from "./WorkspaceChrome";
 import { PinoutDiagram } from "@/components/visuals/pinout/PinoutDiagram";
 import { ClockTree } from "@/components/visuals/clock-tree/ClockTree";
@@ -65,9 +66,12 @@ export function WorkspaceLayout({ prompt }: Props) {
       >
         <motion.header
           variants={item}
-          className="col-span-3 flex items-center justify-between px-1 py-1"
+          className="col-span-3 flex items-start justify-between gap-3 px-1 py-1"
         >
-          <WorkspacePromptHeader prompt={prompt} />
+          <div className="flex items-start gap-3 flex-wrap min-w-0">
+            <WorkspacePromptHeader prompt={prompt} />
+            <PlanPanel />
+          </div>
           <span
             className="text-[10px] uppercase tracking-[0.22em] font-mono"
             style={{

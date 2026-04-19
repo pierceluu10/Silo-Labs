@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { AgentName, SSEEvent } from "@/types/sse";
+import type { AgentName, FeatureSpec, NodeMetric, RunMetrics, SSEEvent } from "@/types/sse";
 
 export interface PinEvent {
   pin_number: number;
@@ -64,9 +64,17 @@ export interface GeneratedFile {
 
 export type FullscreenTarget = AgentName | "code" | null;
 
+export interface RunPlanState {
+  features: FeatureSpec[];
+  rationale: string;
+}
+
 export interface SiloState {
   sessionId: string | null;
   activeAgent: AgentName | null;
+  runPlan: RunPlanState | null;
+  nodeMetrics: NodeMetric[];
+  runMetrics: RunMetrics | null;
   agentReasoning: Record<AgentName, string>;
   activities: Record<AgentName, ActivityItem[]>;
   pins: PinEvent[];
@@ -89,6 +97,7 @@ export interface SiloState {
 }
 
 const emptyReasoning = (): Record<AgentName, string> => ({
+  supervisor: "",
   requirements_parser: "",
   pinout_resolver: "",
   clock_configurator: "",
@@ -99,6 +108,7 @@ const emptyReasoning = (): Record<AgentName, string> => ({
 });
 
 const emptyActivities = (): Record<AgentName, ActivityItem[]> => ({
+  supervisor: [],
   requirements_parser: [],
   pinout_resolver: [],
   clock_configurator: [],
@@ -127,6 +137,9 @@ const initial = () => ({
   pipelineComplete: false,
   errorMessage: null as string | null,
   fullscreen: null as FullscreenTarget,
+  runPlan: null as RunPlanState | null,
+  nodeMetrics: [] as NodeMetric[],
+  runMetrics: null as RunMetrics | null,
 });
 
 export const useSiloStore = create<SiloState>((set) => ({
@@ -210,6 +223,17 @@ export const useSiloStore = create<SiloState>((set) => ({
               is_stub: event.is_stub,
               note: event.note,
             },
+          };
+        case "run_plan":
+          return {
+            runPlan: { features: event.features, rationale: event.rationale },
+          };
+        case "metrics_update":
+          return { nodeMetrics: [...state.nodeMetrics, event.node] };
+        case "metrics_summary":
+          return {
+            runMetrics: event.metrics,
+            nodeMetrics: event.metrics.nodes,
           };
         case "pipeline_complete":
           return { pipelineComplete: true };

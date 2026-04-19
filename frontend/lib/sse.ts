@@ -27,6 +27,9 @@ const EVENT_TYPES: readonly SSEEventType[] = [
   "simulate_start",
   "simulate_output",
   "device_part_info",
+  "run_plan",
+  "metrics_update",
+  "metrics_summary",
   "pipeline_complete",
   "error",
 ] as const;

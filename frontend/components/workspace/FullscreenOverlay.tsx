@@ -12,6 +12,7 @@ import { RegisterPanel } from "@/components/visuals/registers/RegisterPanel";
 import { CodeEditor } from "@/components/visuals/code-editor/CodeEditor";
 
 const VISUALS: Record<AgentName | "code", React.ReactNode> = {
+  supervisor: null,
   requirements_parser: null,
   pinout_resolver: <PinoutDiagram />,
   clock_configurator: <ClockTree />,

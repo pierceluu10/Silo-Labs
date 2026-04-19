@@ -7,9 +7,10 @@ import { getApiBase } from "@/lib/sse";
 import { CodeEditor } from "@/components/visuals/code-editor/CodeEditor";
 import { TerminalView } from "@/components/visuals/terminal/TerminalView";
 import { WokwiSimViewer } from "@/components/visuals/wokwi-sim/WokwiSimViewer";
+import { MetricsView } from "@/components/visuals/metrics/MetricsView";
 import { FollowUpBar } from "./WorkspaceChrome";
 
-type Tab = "code" | "terminal" | "live";
+type Tab = "code" | "terminal" | "live" | "metrics";
 
 function ExpandIcon({ size = 14 }: { size?: number }) {
   return (
@@ -59,7 +60,7 @@ export function CentralHero() {
         className="flex items-center gap-0 border-b"
         style={{ borderColor: "var(--color-charcoal)" }}
       >
-        {(["code", "terminal", "live"] as const).map((t) => (
+        {(["code", "terminal", "live", "metrics"] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -115,6 +116,9 @@ export function CentralHero() {
         </div>
         <div style={{ display: tab === "live" ? "block" : "none", height: "100%" }}>
           <WokwiSimViewer />
+        </div>
+        <div style={{ display: tab === "metrics" ? "block" : "none", height: "100%" }}>
+          <MetricsView />
         </div>
       </div>
       <div

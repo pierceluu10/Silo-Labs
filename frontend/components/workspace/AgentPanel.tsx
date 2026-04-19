@@ -7,6 +7,7 @@ import { useSiloStore } from "@/lib/store";
 import { AgentActivityList } from "./AgentActivityList";
 
 const AGENT_LABELS: Record<AgentName, string> = {
+  supervisor: "Supervisor",
   requirements_parser: "Requirements",
   pinout_resolver: "Pinout",
   clock_configurator: "Clocks",
