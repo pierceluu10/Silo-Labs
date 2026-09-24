@@ -1,6 +1,6 @@
 # Silo Labs
 
-AI firmware generator for the Raspberry Pi Pico (RP2040). Describe what you want in natural
+AI firmware generator. Describe what you want in natural
 language; a multi-agent LangGraph pipeline emits pin assignments, clock configuration,
 register writes, wiring, C code, and a Wokwi simulation — live, streamed over SSE.
 
