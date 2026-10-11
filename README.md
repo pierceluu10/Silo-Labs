@@ -4,6 +4,28 @@ AI firmware generator. Describe what you want in natural
 language; a multi-agent LangGraph pipeline emits pin assignments, clock configuration,
 register writes, wiring, C code, and a Wokwi simulation — live, streamed over SSE.
 
+## Screenshots
+
+The workspace screenshots show the local DHT22 demo and fixture simulation output.
+
+### Landing page
+
+Describe the firmware you want to build.
+
+<img width="1200" alt="Silo Labs landing page with a firmware prompt" src="docs/screenshots/landing.jpg" />
+
+### Firmware workspace
+
+Agent handoffs and the resulting C firmware in the demo workspace.
+
+<img width="1200" alt="Silo Labs workspace showing completed agent handoffs and generated C firmware" src="docs/screenshots/firmware.jpg" />
+
+### Simulation output
+
+The DHT22 demo with temperature, humidity and serial readings.
+
+<img width="1200" alt="Silo Labs DHT22 demo showing temperature, humidity and serial output" src="docs/screenshots/simulation.jpg" />
+
 ## Canonical demo
 
 > Read a BME280 over I2C and display the readings on an SSD1306 OLED.
