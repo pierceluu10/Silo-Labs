@@ -1,35 +1,44 @@
 from __future__ import annotations
 
+import json
+
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from app.schemas.state import Requirements
 from app.schemas.tools import ConfigureClock
 
-from ._common import sonnet, svd_system_context
+from ._common import grounded_system_prompt, sonnet, target_profile
 
 
 class ClockConfigList(BaseModel):
     clocks: list[ConfigureClock] = Field(default_factory=list)
 
 
-SYSTEM = """You are the Clock Configurator for the RP2040.
+SYSTEM = """You are the Clock Configurator.
 
-Return a minimal set of clock configurations for the requested peripheral. For a typical
-I2C/SPI/UART application running the system at 125 MHz:
-  - XOSC: source=XOSC, freq_hz=12_000_000, divider=1.0
-  - PLL_SYS: source=XOSC, freq_hz=125_000_000, divider=1.0, pll_vco_freq_hz=1_500_000_000
-  - CLK_SYS: source=PLL_SYS, freq_hz=125_000_000, divider=1.0
-  - CLK_PERI: source=CLK_SYS, freq_hz=125_000_000, divider=1.0
-  - CLK_REF: source=XOSC, freq_hz=12_000_000, divider=1.0
+Return a minimal set of clock configurations that brings the target MCU up for the
+requested peripheral. Start from the default plan below and change it only when the
+peripheral needs it (e.g. ADC clock limits, USB 48 MHz).
 
-clock_domain values: XOSC, ROSC, PLL_SYS, PLL_USB, CLK_REF, CLK_SYS, CLK_PERI, CLK_USB, CLK_ADC, CLK_RTC.
-pll_vco_freq_hz is required only on the PLL row itself (clock_domain=PLL_SYS or PLL_USB), not on downstream clocks that source from a PLL.
+clock_domain and source must be one of the allowed domain names listed below.
+pll_vco_freq_hz is required only on PLL rows themselves, not on downstream clocks that
+source from a PLL.
 """
 
 
 async def configure_clocks(requirements: Requirements) -> list[ConfigureClock]:
-    sys_msg = f"{SYSTEM}\n\n# RP2040 SVD context\n{svd_system_context(requirements.peripheral_type)}"
+    profile = target_profile()
+    sys_msg = (
+        grounded_system_prompt(
+            SYSTEM,
+            profile,
+            requirements.peripheral_type,
+            f"clock tree PLL oscillator bus prescaler {requirements.peripheral_type} clock",
+        )
+        + f"\n\n# Allowed clock domains\n{', '.join(profile.clock_domains)}"
+        + f"\n\n# Default plan: {profile.clock_hint.description}\n{json.dumps(profile.clock_hint.rows)}"
+    )
     llm = sonnet(max_tokens=1024).with_structured_output(ClockConfigList)
     result = await llm.ainvoke(
         [

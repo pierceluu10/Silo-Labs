@@ -1,7 +1,8 @@
 "use client";
 
 import clsx from "clsx";
-import { motion } from "framer-motion";
+import { ArrowsOutSimple, Check, DotsSixVertical } from "@phosphor-icons/react";
+import { motion, useReducedMotion } from "framer-motion";
 import type { AgentName } from "@/types/sse";
 import { useSiloStore } from "@/lib/store";
 import { AgentActivityList } from "./AgentActivityList";
@@ -16,19 +17,6 @@ const AGENT_LABELS: Record<AgentName, string> = {
   wokwi_diagram_generator: "Wiring",
   code_composer: "Code",
 };
-
-function ExpandIcon({ size = 12 }: { size?: number }) {
-  // Two opposing right-angle brackets (matches the "open in fullscreen"
-  // glyph in the reference screenshot).
-  return (
-    <svg width={size} height={size} viewBox="0 0 12 12" fill="none" aria-hidden>
-      <path d="M2 4.5V2h2.5" stroke="currentColor" strokeWidth={1.2} strokeLinecap="round" />
-      <path d="M10 7.5V10H7.5" stroke="currentColor" strokeWidth={1.2} strokeLinecap="round" />
-      <path d="M7.5 2H10v2.5" stroke="currentColor" strokeWidth={1.2} strokeLinecap="round" />
-      <path d="M4.5 10H2V7.5" stroke="currentColor" strokeWidth={1.2} strokeLinecap="round" />
-    </svg>
-  );
-}
 
 interface Props {
   /** The single agent this card represents. */
@@ -45,67 +33,47 @@ export function AgentPanel({ agent, title, children, fullscreen = false }: Props
   const active = useSiloStore((s) => s.activeAgent);
   const activities = useSiloStore((s) => s.activities[agent]);
   const setFullscreen = useSiloStore((s) => s.setFullscreen);
+  const duration = useSiloStore((s) => s.agentDurations[agent]);
+  const reduceMotion = useReducedMotion();
   const isActive = active === agent;
-  const completed = activities.length > 0 && activities.every((a) => a.status === "done");
+  const completed = duration !== undefined;
 
-  const dotColor = isActive
-    ? "var(--color-accent)"
-    : completed
-      ? "var(--color-accent-light)"
-      : "var(--color-charcoal)";
-
-  const headerLabel = title ?? `Agent — ${AGENT_LABELS[agent]}`;
+  const headerLabel = title ?? `Agent / ${AGENT_LABELS[agent]}`;
 
   return (
     <motion.section
-      layout
+      layout={!reduceMotion}
       className={clsx(
-        "border flex flex-col min-h-0 overflow-hidden transition-colors h-full w-full",
-        fullscreen ? "rounded-3xl" : "rounded-2xl",
+        "agent-window",
+        fullscreen && "agent-window--fullscreen",
       )}
-      style={{
-        borderColor: isActive ? "var(--color-accent)" : "var(--color-charcoal)",
-        background: "color-mix(in oklab, var(--color-carbon) 80%, transparent)",
-        backdropFilter: "blur(10px)",
-        WebkitBackdropFilter: "blur(10px)",
-        boxShadow: isActive
-          ? "0 0 22px var(--color-accent-tint), inset 0 0 0 1px rgba(255,255,255,0.04)"
-          : "inset 0 0 0 1px rgba(255,255,255,0.03)",
-      }}
+      data-state={isActive ? "active" : completed ? "complete" : "queued"}
+      animate={reduceMotion ? undefined : { y: isActive ? -2 : 0 }}
+      transition={{ duration: 0.2, ease: [0.23, 1, 0.32, 1] }}
     >
-      <header
-        className="px-3 py-2 flex items-center justify-between border-b"
-        style={{ borderColor: "var(--color-charcoal)" }}
-      >
+      <header className="agent-window__header">
         <div className="flex items-center gap-2 min-w-0">
-          <span
-            className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
-            style={{
-              background: dotColor,
-              boxShadow: isActive ? "0 0 6px var(--color-accent-tint)" : "none",
-              animation: isActive ? "siloPulse 1.1s ease-in-out infinite" : undefined,
-            }}
-          />
-          <span
-            className="text-[11px] uppercase tracking-[0.18em] truncate"
-            style={{ color: isActive ? "var(--color-accent-light)" : "var(--color-snow)" }}
-          >
+          <DotsSixVertical className="agent-window__grip" size={14} weight="bold" />
+          <span className="agent-window__title">
             {headerLabel}
           </span>
+          {isActive && <span className="agent-window__live">Working</span>}
+          {completed && !isActive && (
+            <span className="agent-window__complete"><Check size={10} weight="bold" /> Done</span>
+          )}
         </div>
         <button
           type="button"
           onClick={() => setFullscreen(fullscreen ? null : agent)}
           aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
-          className="p-1 rounded hover:bg-[color:var(--color-charcoal)]/40 transition-colors"
-          style={{ color: "var(--color-steel)" }}
+          className="icon-button"
         >
-          <ExpandIcon />
+          <ArrowsOutSimple size={14} />
         </button>
       </header>
       <div
         className={clsx(
-          "flex-1 min-h-0 grid",
+          "agent-window__body",
           fullscreen ? "grid-cols-[3fr_2fr] grid-rows-1" : "grid-rows-[minmax(0,1fr)_minmax(0,42%)]",
         )}
       >
@@ -117,12 +85,7 @@ export function AgentPanel({ agent, title, children, fullscreen = false }: Props
           )}
           style={{ borderColor: "var(--color-charcoal)" }}
         >
-          <p
-            className="text-[9px] uppercase tracking-[0.2em] m-0 mb-1.5 shrink-0"
-            style={{ color: "var(--color-steel)" }}
-          >
-            Agent activity
-          </p>
+          <p className="activity-label">Activity log</p>
           <div className="flex-1 min-h-0">
             <AgentActivityList items={activities} />
           </div>

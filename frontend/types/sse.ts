@@ -43,7 +43,15 @@ export interface RunMetrics {
 }
 
 export type SSEEvent =
-  | { type: "session_ready"; session_id: string }
+  | {
+      type: "session_ready";
+      session_id: string;
+      target_mcu: string;
+      mcu_display_name: string;
+      board_name: string;
+      board_part: string;
+      sdk: string;
+    }
   | { type: "agent_start"; agent: AgentName; timestamp: number }
   | { type: "agent_reasoning"; agent: AgentName; panel: Panel; delta: string }
   | { type: "agent_complete"; agent: AgentName; duration_ms: number }
@@ -58,6 +66,7 @@ export type SSEEvent =
   | {
       type: "assign_pin";
       pin_number: number;
+      pin_name: string;
       function: string;
       peripheral_instance: string;
       label: string;

@@ -5,6 +5,9 @@ import { useSiloStore } from "@/lib/store";
 import { getApiBase } from "@/lib/sse";
 import { WokwiClient } from "@/lib/wokwi-embed/wokwi-client";
 import { MessagePortTransport } from "@/lib/wokwi-embed/message-port-transport";
+import { Dht22Simulation } from "./Dht22Simulation";
+
+const DHT22_DEVICE = "DHT22";
 
 interface SimBundle {
   session_id: string;
@@ -28,6 +31,9 @@ export function WokwiSimViewer() {
   const sessionId = useSiloStore((s) => s.sessionId);
   const uf2Url = useSiloStore((s) => s.uf2Url);
   const apply = useSiloStore((s) => s.apply);
+  const isDht22 = useSiloStore(
+    (s) => s.runPlan?.features.some((f) => f.device_name.toUpperCase() === DHT22_DEVICE) ?? false,
+  );
   const apiBase = getApiBase();
 
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
@@ -132,8 +138,11 @@ export function WokwiSimViewer() {
     };
   }, [sessionId, uf2Url, apiBase, apply]);
 
+  // The animated DHT22 widget belongs to the canned demo; other runs get the plain placeholders.
   if (status.kind === "no-client-id") {
-    return (
+    return isDht22 ? (
+      <Dht22Simulation />
+    ) : (
       <div className="h-full w-full flex items-center justify-center p-6">
         <div className="max-w-md text-center">
           <p className="text-[12px] font-mono text-steel mb-2">
@@ -150,7 +159,9 @@ export function WokwiSimViewer() {
   }
 
   if (status.kind === "no-build") {
-    return (
+    return isDht22 ? (
+      <Dht22Simulation />
+    ) : (
       <div className="h-full w-full flex items-center justify-center">
         <p className="text-[11px] font-mono text-steel">
           Live sim will appear here once the build completes.

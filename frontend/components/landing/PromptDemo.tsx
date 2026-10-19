@@ -1,100 +1,89 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
+import { EXAMPLE_PROMPTS } from "@/lib/prompts";
 
-const EXAMPLES = [
-  "BME280 over I2C → SSD1306 OLED",
-  "Servo sweep controlled over UART",
-  "WS2812 rainbow at 30fps, brightness control",
-  "ADC0 at 1kHz, filtered readings over UART",
-];
-
-const TYPE_MS = 95;
-const ERASE_MS = 45;
-const HOLD_MS = 2600;
-const PAUSE_MS = 700;
+const TYPE_INTERVAL_MS = 72;
+const ERASE_INTERVAL_MS = 34;
+const HOLD_INTERVAL_MS = 2200;
+const NEXT_PROMPT_DELAY_MS = 420;
+const REVEAL_DELAY_SECONDS = 0.65;
+const REVEAL_DURATION_SECONDS = 0.55;
 
 export function PromptDemo() {
   const [text, setText] = useState("");
+  const reduceMotion = useReducedMotion();
 
   useEffect(() => {
+    if (reduceMotion) {
+      setText(EXAMPLE_PROMPTS[0]);
+      return;
+    }
+
     let cancelled = false;
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    let idx = 0;
-    let charIdx = 0;
+    let timeout: ReturnType<typeof setTimeout>;
+    let promptIndex = Math.floor(Math.random() * EXAMPLE_PROMPTS.length);
+    let characterIndex = 0;
     let mode: "typing" | "holding" | "erasing" = "typing";
 
     const tick = () => {
       if (cancelled) return;
-      const current = EXAMPLES[idx];
+      const prompt = EXAMPLE_PROMPTS[promptIndex];
+
       if (mode === "typing") {
-        charIdx += 1;
-        setText(current.slice(0, charIdx));
-        if (charIdx >= current.length) {
+        characterIndex += 1;
+        setText(prompt.slice(0, characterIndex));
+        if (characterIndex >= prompt.length) {
           mode = "holding";
-          timeout = setTimeout(tick, HOLD_MS);
+          timeout = setTimeout(tick, HOLD_INTERVAL_MS);
         } else {
-          timeout = setTimeout(tick, TYPE_MS);
+          timeout = setTimeout(tick, TYPE_INTERVAL_MS);
         }
-      } else if (mode === "holding") {
+        return;
+      }
+
+      if (mode === "holding") {
         mode = "erasing";
-        timeout = setTimeout(tick, ERASE_MS);
+        timeout = setTimeout(tick, ERASE_INTERVAL_MS);
+        return;
+      }
+
+      characterIndex -= 1;
+      setText(prompt.slice(0, Math.max(0, characterIndex)));
+      if (characterIndex <= 0) {
+        promptIndex = (promptIndex + 1) % EXAMPLE_PROMPTS.length;
+        mode = "typing";
+        timeout = setTimeout(tick, NEXT_PROMPT_DELAY_MS);
       } else {
-        charIdx -= 1;
-        setText(current.slice(0, Math.max(0, charIdx)));
-        if (charIdx <= 0) {
-          idx = (idx + 1) % EXAMPLES.length;
-          mode = "typing";
-          timeout = setTimeout(tick, PAUSE_MS);
-        } else {
-          timeout = setTimeout(tick, ERASE_MS);
-        }
+        timeout = setTimeout(tick, ERASE_INTERVAL_MS);
       }
     };
 
-    timeout = setTimeout(tick, 120);
+    timeout = setTimeout(tick, 160);
     return () => {
       cancelled = true;
-      if (timeout) clearTimeout(timeout);
+      clearTimeout(timeout);
     };
-  }, []);
+  }, [reduceMotion]);
 
   return (
-    <div
-      className="inline-flex max-w-[min(100%,36rem)] rounded-md px-4 py-3 items-center gap-3"
-      style={{
-        background: "rgba(16, 16, 16, 0.9)",
-        border: "1px solid var(--color-charcoal)",
-        backdropFilter: "blur(6px)",
-        fontFamily: "var(--font-mono)",
-        fontSize: "13px",
+    <motion.div
+      className="prompt-demo"
+      aria-label="Example firmware prompt"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{
+        delay: reduceMotion ? 0 : REVEAL_DELAY_SECONDS,
+        duration: reduceMotion ? 0.2 : REVEAL_DURATION_SECONDS,
+        ease: [0.23, 1, 0.32, 1],
       }}
     >
-      <motion.div
-        className="inline-flex min-w-0 items-center gap-3"
-        initial={{ opacity: 0, y: 6, filter: "blur(4px)" }}
-        animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-        transition={{ duration: 0.5, ease: [0.2, 0.8, 0.2, 1] }}
-      >
-        <span className="shrink-0" style={{ color: "var(--color-accent-light)" }}>
-          $
-        </span>
-        <span className="text-snow whitespace-pre">{text}</span>
-        <span
-          aria-hidden
-          className="inline-block w-[7px] h-[14px] shrink-0"
-          style={{
-            background: "var(--color-accent-light)",
-            animation: "silo-caret 1.1s steps(2) infinite",
-          }}
-        />
-      </motion.div>
-      <style jsx>{`
-        @keyframes silo-caret {
-          50% { opacity: 0; }
-        }
-      `}</style>
-    </div>
+      <div className="prompt-demo__line">
+        <span className="prompt-demo__symbol">$</span>
+        <span className="prompt-demo__text">{text}</span>
+        <span aria-hidden className="prompt-demo__caret" />
+      </div>
+    </motion.div>
   );
 }

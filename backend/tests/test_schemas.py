@@ -149,7 +149,7 @@ def test_design_state_round_trip() -> None:
 
 def test_sse_event_discriminates_on_type() -> None:
     adapter = TypeAdapter(SSEEvent)
-    ev = adapter.validate_python({"type": "assign_pin", "pin_number": 4, "function": "I2C_SDA",
+    ev = adapter.validate_python({"type": "assign_pin", "pin_number": 4, "pin_name": "GP4", "function": "I2C_SDA",
                                    "peripheral_instance": "I2C0", "label": "SDA", "wire_color": "#e6c84a"})
     assert ev.type == "assign_pin"
     ev2 = adapter.validate_python({"type": "code_chunk", "delta": "#include"})

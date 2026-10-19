@@ -6,28 +6,19 @@ from pydantic import BaseModel, Field
 from app.schemas.state import Requirements
 from app.schemas.tools import SetRegister
 
-from ._common import sonnet, svd_system_context
+from ._common import grounded_system_prompt, sonnet, target_profile
 
 
 class RegisterWriteList(BaseModel):
     writes: list[SetRegister] = Field(default_factory=list)
 
 
-SYSTEM = """You are the Peripheral Configurator for the RP2040.
+SYSTEM = """You are the Peripheral Configurator.
 
-Emit the minimal set of register field writes needed to bring up the chosen peripheral.
-Pick registers and fields by NAME from the SVD context. The system will look up the
-authoritative address — you do NOT guess addresses.
-
-For I2C master mode (e.g. BME280 at 400 kHz on I2C0):
-  - RESETS.RESET clear bit for I2C0
-  - I2C0.IC_ENABLE.ENABLE = 0   (disable before configuring)
-  - I2C0.IC_CON.SPEED = 2       (fast mode)
-  - I2C0.IC_CON.MASTER_MODE = 1
-  - I2C0.IC_CON.IC_SLAVE_DISABLE = 1
-  - I2C0.IC_CON.IC_RESTART_EN = 1
-  - I2C0.IC_SS_SCL_HCNT / IC_SS_SCL_LCNT for timing
-  - I2C0.IC_ENABLE.ENABLE = 1
+Emit the minimal set of register field writes needed to bring up the chosen peripheral on
+the target MCU. Pick registers and fields by NAME from the SVD context and the retrieved
+register specs. The system will look up the authoritative address — you do NOT guess
+addresses. Writes naming a register or field that is not in the SVD are rejected.
 
 Each entry needs: peripheral, register, field_name, value, human_explanation.
 Set bit_offset=0 and bit_width=1 as placeholders — the SVD lookup overrides them.
@@ -35,7 +26,17 @@ Set bit_offset=0 and bit_width=1 as placeholders — the SVD lookup overrides th
 
 
 async def configure_peripheral(requirements: Requirements) -> list[SetRegister]:
-    sys_msg = f"{SYSTEM}\n\n# RP2040 SVD context\n{svd_system_context(requirements.peripheral_type)}"
+    profile = target_profile()
+    sys_msg = (
+        grounded_system_prompt(
+            SYSTEM,
+            profile,
+            requirements.peripheral_type,
+            f"{requirements.peripheral_type} {requirements.device_name} enable configure registers "
+            f"{requirements.description}",
+        )
+        + f"\n\n# Example\n{profile.peripheral_example}"
+    )
     llm = sonnet(max_tokens=2048).with_structured_output(RegisterWriteList)
     result = await llm.ainvoke(
         [

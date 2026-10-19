@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from functools import lru_cache
 from typing import Any
 
 from langchain_anthropic import ChatAnthropic
@@ -8,7 +7,8 @@ from langchain_core.callbacks import BaseCallbackHandler
 
 from app.config import get_settings
 from app.graph.metrics import record_llm_usage
-from app.knowledge.graph import get_graph
+from app.knowledge.graph import current_mcu
+from app.mcu import McuProfile, get_profile
 
 
 class _UsageCaptureHandler(BaseCallbackHandler):
@@ -42,39 +42,6 @@ class _UsageCaptureHandler(BaseCallbackHandler):
         if in_tokens or out_tokens:
             record_llm_usage(in_tokens, out_tokens, self.model)
 
-# Peripherals every Sonnet agent needs regardless of the requested user peripheral:
-# clocks/PLL/oscillator domains, resets, GPIO bank/pad muxing, and SIO.
-_ALWAYS_INCLUDED_SVD = (
-    "CLOCKS",
-    "PLL_SYS",
-    "PLL_USB",
-    "XOSC",
-    "ROSC",
-    "RESETS",
-    "IO_BANK0",
-    "PADS_BANK0",
-    "SIO",
-)
-
-
-@lru_cache(maxsize=16)
-def svd_system_context(peripheral_family: str | None = None) -> str:
-    """Compact SVD summary prepended to Sonnet agents' system prompts (cached).
-
-    When `peripheral_family` is given (e.g. "I2C", "SPI", "UART"), the SVD is
-    scoped to instances of that family plus a small always-included core
-    (clocks, resets, GPIO mux, SIO). This dramatically reduces input tokens
-    per Sonnet call so we stay under the per-minute rate limit.
-    """
-    graph = get_graph()
-    if not peripheral_family:
-        return graph.svd_summary(max_registers_per_peripheral=6)
-    fam = peripheral_family.strip().upper()
-    instances = [name for name in graph._peripherals if name.startswith(fam)]
-    wanted = set(_ALWAYS_INCLUDED_SVD) | set(instances)
-    return graph.svd_summary(peripherals=wanted, max_registers_per_peripheral=6)
-
-
 def sonnet(max_tokens: int = 1024, temperature: float = 0) -> ChatAnthropic:
     settings = get_settings()
     return ChatAnthropic(
@@ -94,4 +61,19 @@ def haiku(max_tokens: int = 768, temperature: float = 0) -> ChatAnthropic:
         max_tokens=max_tokens,
         temperature=temperature,
         callbacks=[_UsageCaptureHandler(settings.haiku_model)],
+    )
+
+
+def target_profile() -> McuProfile:
+    """Profile of the MCU the running pipeline targets."""
+    return get_profile(current_mcu())
+
+
+def grounded_system_prompt(role: str, profile: McuProfile, peripheral_family: str, query: str) -> str:
+    """Role prompt + scoped SVD summary + RAG-retrieved register specs and vendor docs."""
+    return (
+        f"{role}\n\n# Target MCU: {profile.display_name} on {profile.board_name}\n"
+        f"Pin convention: {profile.valid_pin_label}\n\n"
+        f"# {profile.display_name} SVD context\n{profile.svd_summary(peripheral_family)}\n\n"
+        f"{profile.grounding(query)}"
     )

@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from cmsis_svd.model import SVDFieldArray, SVDRegisterArray
 from cmsis_svd.parser import SVDParser
 
 KNOWLEDGE_DIR = Path(__file__).resolve().parents[2] / "knowledge_data"
@@ -47,6 +48,19 @@ def _slice_reset(register_reset: int, bit_offset: int, bit_width: int) -> int:
     return (register_reset >> bit_offset) & mask
 
 
+def _expand_dim_arrays(items: list) -> list:
+    """Flatten SVD ``<dim>`` arrays (e.g. ESP32 SPI W0..W15) into their elements."""
+    expanded: list = []
+    for item in items:
+        if isinstance(item, SVDRegisterArray):
+            expanded.extend(item.registers)
+        elif isinstance(item, SVDFieldArray):
+            expanded.extend(item.fields)
+        else:
+            expanded.append(item)
+    return expanded
+
+
 def load_svd_peripherals(svd_path: Path = SVD_PATH) -> dict[str, PeripheralSpec]:
     parser = SVDParser.for_xml_file(str(svd_path))
     device = parser.get_device()
@@ -54,10 +68,10 @@ def load_svd_peripherals(svd_path: Path = SVD_PATH) -> dict[str, PeripheralSpec]
     peripherals: dict[str, PeripheralSpec] = {}
     for pe in device.peripherals:
         registers: dict[str, RegisterSpec] = {}
-        for reg in (pe.registers or []):
+        for reg in _expand_dim_arrays(pe.registers or []):
             reset = reg.reset_value or 0
             fields: dict[str, FieldSpec] = {}
-            for f in reg.fields or []:
+            for f in _expand_dim_arrays(reg.fields or []):
                 fields[f.name] = FieldSpec(
                     name=f.name,
                     bit_offset=f.bit_offset,

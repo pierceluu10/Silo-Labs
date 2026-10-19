@@ -36,8 +36,13 @@ const EVENT_TYPES: readonly SSEEventType[] = [
 
 export type SSEHandler = (event: SSEEvent) => void;
 
-export function openPipelineStream(prompt: string, onEvent: SSEHandler, sessionId?: string): EventSource {
-  const params = new URLSearchParams({ prompt });
+export function openPipelineStream(
+  prompt: string,
+  mcu: string,
+  onEvent: SSEHandler,
+  sessionId?: string,
+): EventSource {
+  const params = new URLSearchParams({ prompt, mcu });
   if (sessionId) params.set("session_id", sessionId);
   const url = `${API_BASE}/api/stream?${params.toString()}`;
   const source = new EventSource(url);

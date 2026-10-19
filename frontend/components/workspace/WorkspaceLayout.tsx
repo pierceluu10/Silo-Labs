@@ -5,9 +5,9 @@ import { motion } from "framer-motion";
 import { openPipelineStream } from "@/lib/sse";
 import { useSiloStore } from "@/lib/store";
 import { AgentPanel } from "./AgentPanel";
+import { AgentRunRail } from "./AgentRunRail";
 import { CentralHero } from "./CentralHero";
 import { FullscreenOverlay } from "./FullscreenOverlay";
-import { PlanPanel } from "./PlanPanel";
 import { WorkspacePromptHeader } from "./WorkspaceChrome";
 import { PinoutDiagram } from "@/components/visuals/pinout/PinoutDiagram";
 import { ClockTree } from "@/components/visuals/clock-tree/ClockTree";
@@ -16,15 +16,8 @@ import { BreadboardView } from "@/components/visuals/breadboard/BreadboardView";
 
 interface Props {
   prompt: string;
+  mcu: string;
 }
-
-const container = {
-  hidden: { opacity: 0 },
-  show: {
-    opacity: 1,
-    transition: { staggerChildren: 0.07, delayChildren: 0.06 },
-  },
-};
 
 const item = {
   hidden: { opacity: 0, y: 10, filter: "blur(6px)" },
@@ -36,7 +29,7 @@ const item = {
   },
 };
 
-export function WorkspaceLayout({ prompt }: Props) {
+export function WorkspaceLayout({ prompt, mcu }: Props) {
   const apply = useSiloStore((s) => s.apply);
   const reset = useSiloStore((s) => s.reset);
   const sessionId = useSiloStore((s) => s.sessionId);
@@ -45,35 +38,26 @@ export function WorkspaceLayout({ prompt }: Props) {
 
   useEffect(() => {
     reset();
-    const source = openPipelineStream(prompt, apply);
+    const source = openPipelineStream(prompt, mcu, apply);
     return () => source.close();
-  }, [prompt, apply, reset]);
+  }, [prompt, mcu, apply, reset]);
 
   return (
     <>
       <FullscreenOverlay />
       <motion.main
-        className="h-screen p-4 grid gap-3"
-        style={{
-          gridTemplateColumns: "1fr 2fr 1fr",
-          gridTemplateRows: "auto 1fr 1fr",
-          position: "relative",
-          zIndex: 2,
-        }}
-        variants={container}
+        className="workspace-shell"
         initial="hidden"
         animate="show"
       >
         <motion.header
           variants={item}
-          className="col-span-3 flex items-start justify-between gap-3 px-1 py-1"
+          className="workspace-header"
         >
-          <div className="flex items-start gap-3 flex-wrap min-w-0">
-            <WorkspacePromptHeader prompt={prompt} />
-            <PlanPanel />
-          </div>
+          <WorkspacePromptHeader prompt={prompt} />
           <span
-            className="text-[10px] uppercase tracking-[0.22em] font-mono"
+            className="workspace-status"
+            data-state={errorMessage ? "error" : pipelineComplete ? "complete" : "running"}
             style={{
               color: errorMessage
                 ? "var(--color-danger)"
@@ -82,35 +66,37 @@ export function WorkspaceLayout({ prompt }: Props) {
                   : "var(--color-steel)",
             }}
           >
-            {sessionId ? `session ${sessionId.slice(0, 8)}` : "connecting…"}
-            {" · "}
-            {errorMessage ? "error" : pipelineComplete ? "complete" : "running"}
+            {sessionId ? `Run ${sessionId.slice(0, 8)}` : "Connecting"}
+            <span>{errorMessage ? "Error" : pipelineComplete ? "Complete" : "Running"}</span>
           </span>
         </motion.header>
 
-        <motion.div variants={item} id="card-pinout" className="min-h-0 flex flex-col">
+        <motion.div variants={item} className="workspace-rail">
+          <AgentRunRail />
+        </motion.div>
+        <motion.div variants={item} id="card-pinout" className="workspace-panel workspace-panel--pinout">
           <AgentPanel agent="pinout_resolver">
             <PinoutDiagram />
           </AgentPanel>
         </motion.div>
         <motion.div
           variants={item}
-          className="row-span-2 min-h-0 flex flex-col"
+          className="workspace-center"
         >
           <CentralHero />
         </motion.div>
-        <motion.div variants={item} id="card-clocks" className="min-h-0 flex flex-col">
+        <motion.div variants={item} id="card-clocks" className="workspace-panel workspace-panel--clocks">
           <AgentPanel agent="clock_configurator">
             <ClockTree />
           </AgentPanel>
         </motion.div>
-        <motion.div variants={item} id="card-wiring" className="min-h-0 flex flex-col">
+        <motion.div variants={item} id="card-wiring" className="workspace-panel workspace-panel--wiring">
           <AgentPanel agent="wokwi_diagram_generator">
             <BreadboardView />
           </AgentPanel>
         </motion.div>
-        <motion.div variants={item} id="card-code" className="min-h-0 flex flex-col">
-          <AgentPanel agent="peripheral_configurator" title="Agent — Registers">
+        <motion.div variants={item} id="card-code" className="workspace-panel workspace-panel--registers">
+          <AgentPanel agent="peripheral_configurator" title="Peripheral registers">
             <RegisterPanel />
           </AgentPanel>
         </motion.div>

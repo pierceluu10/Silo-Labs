@@ -3,11 +3,24 @@ import type { AgentName, FeatureSpec, NodeMetric, RunMetrics, SSEEvent } from "@
 
 export interface PinEvent {
   pin_number: number;
+  pin_name: string;
   function: string;
   peripheral_instance: string;
   label: string;
   wire_color: string;
 }
+
+export interface TargetMcu {
+  name: string;
+  displayName: string;
+  boardName: string;
+  /** Board id used in Wokwi wiring, e.g. "pico", "bluepill". */
+  boardPart: string;
+  sdk: string;
+}
+
+/** Board drawn before session_ready arrives; the canned demo runs on the Pico. */
+export const DEFAULT_BOARD_PART = "pico";
 
 export interface ClockEvent {
   clock_domain: string;
@@ -71,7 +84,9 @@ export interface RunPlanState {
 
 export interface SiloState {
   sessionId: string | null;
+  target: TargetMcu | null;
   activeAgent: AgentName | null;
+  agentDurations: Partial<Record<AgentName, number>>;
   runPlan: RunPlanState | null;
   nodeMetrics: NodeMetric[];
   runMetrics: RunMetrics | null;
@@ -120,7 +135,9 @@ const emptyActivities = (): Record<AgentName, ActivityItem[]> => ({
 
 const initial = () => ({
   sessionId: null as string | null,
+  target: null as TargetMcu | null,
   activeAgent: null as AgentName | null,
+  agentDurations: {} as Partial<Record<AgentName, number>>,
   agentReasoning: emptyReasoning(),
   activities: emptyActivities(),
   pins: [] as PinEvent[],
@@ -150,11 +167,23 @@ export const useSiloStore = create<SiloState>((set) => ({
     set((state) => {
       switch (event.type) {
         case "session_ready":
-          return { sessionId: event.session_id };
+          return {
+            sessionId: event.session_id,
+            target: {
+              name: event.target_mcu,
+              displayName: event.mcu_display_name,
+              boardName: event.board_name,
+              boardPart: event.board_part,
+              sdk: event.sdk,
+            },
+          };
         case "agent_start":
           return { activeAgent: event.agent };
         case "agent_complete":
-          return { activeAgent: null };
+          return {
+            activeAgent: state.activeAgent === event.agent ? null : state.activeAgent,
+            agentDurations: { ...state.agentDurations, [event.agent]: event.duration_ms },
+          };
         case "agent_reasoning": {
           const prev = state.agentReasoning[event.agent] ?? "";
           return {

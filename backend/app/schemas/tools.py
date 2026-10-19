@@ -8,8 +8,16 @@ from pydantic import BaseModel, Field, model_validator
 from app.knowledge.graph import (
     UnknownPeripheralError,
     UnknownRegisterError,
+    current_mcu,
     get_graph,
 )
+
+
+def _target_profile():
+    # Lazy: app.mcu imports this module, so a top-level import would cycle.
+    from app.mcu import get_profile
+
+    return get_profile(current_mcu())
 
 
 class PinFunction(str, Enum):
@@ -30,6 +38,8 @@ class PinFunction(str, Enum):
 
 
 class ClockSource(str, Enum):
+    """RP2040 clock domains; other MCUs declare theirs on McuProfile.clock_domains."""
+
     XOSC = "XOSC"
     ROSC = "ROSC"
     GPIN0 = "GPIN0"
@@ -59,28 +69,62 @@ HEX_COLOR = r"^#[0-9a-fA-F]{6}$"
 class AssignPin(BaseModel):
     model_config = {"frozen": True}
 
-    pin_number: Annotated[int, Field(ge=0, le=29)]
+    pin_number: Annotated[int, Field(ge=0, description="GPIO index in the target MCU's numbering")]
     function: PinFunction
     peripheral_instance: str
     label: Annotated[str, Field(max_length=32)]
     wire_color: Annotated[str, Field(pattern=HEX_COLOR)]
+    pin_name: str = Field(default="", description="Derived from pin_number by the MCU profile (GP4, PB7, GPIO21).")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_pin_name(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or not isinstance(data.get("pin_number"), int):
+            return data
+        profile = _target_profile()
+        if data["pin_number"] >= profile.gpio_count:
+            raise ValueError(
+                f"pin_number {data['pin_number']} out of range for {profile.display_name} "
+                f"(0..{profile.gpio_count - 1})"
+            )
+        return {**data, "pin_name": profile.pin_name(data["pin_number"])}
 
 
 class ConfigureClock(BaseModel):
     model_config = {"frozen": True}
 
-    clock_domain: ClockSource
-    source: ClockSource
+    clock_domain: str
+    source: str
     freq_hz: Annotated[int, Field(gt=0, le=250_000_000)]
     divider: Annotated[float, Field(gt=0.0)]
     pll_vco_freq_hz: int | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _check_domains(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        profile = _target_profile()
+        normalized = dict(data)
+        for key in ("clock_domain", "source"):
+            raw = data.get(key)
+            if raw is None:
+                continue
+            name = str(getattr(raw, "value", raw)).upper()
+            if name not in profile.clock_domains:
+                raise ValueError(
+                    f"{key} {name!r} is not a {profile.display_name} clock domain "
+                    f"({', '.join(profile.clock_domains)})"
+                )
+            normalized[key] = name
+        return normalized
+
     @model_validator(mode="after")
     def _require_vco_when_pll(self) -> "ConfigureClock":
         # VCO frequency is a property of the PLL itself (rows where clock_domain is
-        # PLL_SYS / PLL_USB), not of downstream clocks that source from a PLL.
-        if self.clock_domain in (ClockSource.PLL_SYS, ClockSource.PLL_USB) and self.pll_vco_freq_hz is None:
-            raise ValueError(f"pll_vco_freq_hz required when clock_domain is {self.clock_domain.value}")
+        # a PLL), not of downstream clocks that source from a PLL.
+        if self.clock_domain.startswith("PLL") and self.pll_vco_freq_hz is None:
+            raise ValueError(f"pll_vco_freq_hz required when clock_domain is {self.clock_domain}")
         return self
 
 

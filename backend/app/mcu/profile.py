@@ -1,13 +1,14 @@
-"""MCU profile Protocol + small registry.
+"""MCU profile + small registry.
 
 A profile bundles everything the pipeline needs that is chip-specific:
 - supported peripheral families (used by supervisor + pinout)
+- pin naming / numbering and the Wokwi board part
 - prompt fragments injected into agent system messages
 - a default clock plan (used as a fallback / sanity reference)
-- the build runner (compiles a generated project into a flashable artifact)
-- the simulator runner (live or fixture)
-- a knowledge-graph handle for SVD/pin lookups
+- the build runner, or ``None`` when no toolchain ships for this chip
 
+Register/pin facts come from the per-MCU knowledge graph (SVD) and the
+ChromaDB RAG index; profiles only carry what neither source can provide.
 Concrete profiles register themselves at import time.
 """
 
@@ -15,11 +16,16 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Protocol
+from functools import lru_cache
+from typing import TYPE_CHECKING, Any
+
+from app.knowledge.graph import get_graph
+from app.knowledge.rag import grounding_context
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from app.build.compiler import BuildResult
-    from app.schemas.state import GeneratedFile
+
+MAX_REGISTERS_PER_PERIPHERAL = 6
 
 
 @dataclass(frozen=True)
@@ -30,47 +36,73 @@ class ClockPlanHint:
     rows: list[dict[str, Any]] = field(default_factory=list)
 
 
-class McuProfile(Protocol):
-    """Everything chip-specific the pipeline orchestration needs."""
-
+@dataclass(frozen=True, eq=False)
+class McuProfile:
     name: str
-    """Stable key, e.g. ``"rp2040"`` — used in DesignState.target_mcu."""
+    """Stable key, e.g. ``"rp2040"`` — used in DesignState.target_mcu and as the SVD file stem."""
 
     display_name: str
-    """Human label, e.g. ``"Raspberry Pi RP2040"``."""
+    board_name: str
+    """Board the simulator runs, e.g. ``"Raspberry Pi Pico"``."""
+
+    board_part: str
+    """Key into wokwi_components.json; also the board's id in diagram.json."""
 
     supported_peripheral_families: tuple[str, ...]
-    """Used by the supervisor when classifying prompts."""
-
     valid_pin_label: str
-    """Short hint for prompts: e.g. ``"GPIO numbers GP0..GP28"``."""
+    """Short hint for prompts explaining pin numbering and reserved pins."""
 
-    # ----- Knowledge / prompt fragments -------------------------------------
+    gpio_count: int
+    pin_name: Callable[[int], str]
+    core_peripherals: tuple[str, ...]
+    """SVD peripherals every agent needs regardless of feature (clocks, resets, GPIO mux)."""
+
+    clock_domains: tuple[str, ...]
+    clock_hint: ClockPlanHint
+    sdk_label: str
+    """Firmware framework, e.g. ``"pico-sdk"`` or ``"ESP-IDF"``."""
+
+    code_composer_prompt: str
+    peripheral_example: str
+    build_firmware: Callable[..., Awaitable[BuildResult]] | None
+    """``async (files) -> BuildResult``; ``None`` means the code is emitted but not compiled."""
+
     def svd_summary(self, peripheral_family: str | None = None) -> str:
-        """Compact register summary the agents include in their system prompt."""
+        return _svd_summary(self.name, self.core_peripherals, peripheral_family)
 
-    def pinout_options(self, peripheral_family: str, instance_idx: int) -> dict[str, list[int]]:
-        """Map signal -> candidate pin numbers for one instance of the family."""
+    def grounding(self, query: str) -> str:
+        """RAG context: register specs + vendor docs most relevant to ``query``."""
+        return grounding_context(query, self.name)
 
-    def list_peripheral_instances(self, peripheral_family: str) -> list[str]:
-        """E.g. ``["I2C0", "I2C1"]``."""
+    def pinout_options(self, peripheral_family: str) -> dict[str, dict[str, list[int]]]:
+        """Instance -> signal -> candidate pins, where the pin mux is hand-modeled."""
+        graph = get_graph(self.name)
+        family = peripheral_family.upper()
+        options: dict[str, dict[str, list[int]]] = {}
+        for inst in graph.list_peripherals(family):
+            idx = inst[len(family):]
+            if idx.isdigit() and (pins := graph.get_peripheral_pins(family, int(idx))):
+                options[inst] = pins
+        return options
 
-    def default_clock_hint(self) -> ClockPlanHint:
-        """Reasonable bring-up clock plan baked into the clock_configurator prompt."""
-
-    def code_composer_system_prompt(self) -> str:
-        """Chip-specific rules for the code generator (SDK, headers, idioms)."""
-
-    # ----- Build / simulate -------------------------------------------------
-    build_firmware: Callable[..., "Awaitable[BuildResult]"]
-    """``async (files: list[GeneratedFile], project_dir: Path | None = None) -> BuildResult``."""
-
-    run_simulation: Callable[..., Any]
-    """``async (uf2_path, diagram_json, timeout_s) -> SimulationResult``."""
-
-    # ----- Wokwi mapping ---------------------------------------------------
     def wokwi_part_for(self, device_name: str) -> dict[str, Any] | None:
-        """Best-effort lookup; returns ``None`` if no part is known."""
+        return get_graph(self.name).get_wokwi_component(device_name.lower())
+
+
+@lru_cache(maxsize=64)
+def _svd_summary(mcu: str, core: tuple[str, ...], peripheral_family: str | None) -> str:
+    """Compact SVD summary scoped to the feature's family plus the core peripherals.
+
+    Scoping keeps Sonnet input tokens under the per-minute rate limit.
+    """
+    graph = get_graph(mcu)
+    if not peripheral_family:
+        return graph.svd_summary(max_registers_per_peripheral=MAX_REGISTERS_PER_PERIPHERAL)
+    instances = graph.list_peripherals(peripheral_family.strip())
+    return graph.svd_summary(
+        peripherals=set(core) | set(instances),
+        max_registers_per_peripheral=MAX_REGISTERS_PER_PERIPHERAL,
+    )
 
 
 _REGISTRY: dict[str, McuProfile] = {}

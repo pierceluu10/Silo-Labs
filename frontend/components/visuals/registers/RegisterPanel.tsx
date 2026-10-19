@@ -7,11 +7,12 @@ export function RegisterPanel() {
   const registers = useSiloStore((s) => s.registers);
   const reasoning = useSiloStore((s) => s.agentReasoning);
   const active = useSiloStore((s) => s.activeAgent);
+  const sdk = useSiloStore((s) => s.target?.sdk ?? "SDK");
 
   if (registers.length === 0) {
     // peripheral_configurator either still running, or finished and decided
     // no direct register writes were needed (e.g. when the firmware uses
-    // pico-sdk high-level APIs like i2c_init that handle the registers
+    // vendor SDK driver APIs like i2c_init that handle the registers
     // internally). Distinguish so the panel doesn't look broken.
     const periphReasoning = reasoning.peripheral_configurator?.trim() ?? "";
     const finishedEmpty = periphReasoning.length > 0 && active !== "peripheral_configurator";
@@ -21,7 +22,7 @@ export function RegisterPanel() {
         style={{ fontFamily: "var(--font-mono)" }}
       >
         {finishedEmpty
-          ? "No direct register writes — pico-sdk high-level APIs (i2c_init, gpio_set_function, etc.) configure this peripheral."
+          ? `No direct register writes. ${sdk} driver APIs configure this peripheral.`
           : "Register writes will stream here…"}
       </p>
     );

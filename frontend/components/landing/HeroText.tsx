@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { motion, type Variants } from "framer-motion";
+import { motion, useReducedMotion, type Variants } from "framer-motion";
 import { PromptInput } from "./PromptInput";
 
 const HIGHLIGHT = "#f0808a";
@@ -14,32 +14,44 @@ const container: Variants = {
 };
 
 const fadeUp: Variants = {
-  hidden: { opacity: 0, y: 14, filter: "blur(6px)" },
+  hidden: { opacity: 0, transform: "translate3d(0, 14px, 0)", filter: "blur(6px)" },
   visible: {
     opacity: 1,
-    y: 0,
+    transform: "translate3d(0, 0, 0)",
     filter: "blur(0px)",
     transition: { duration: 0.7, ease: [0.2, 0.8, 0.2, 1] },
   },
 };
 
 const highlight: Variants = {
-  hidden: { opacity: 0, y: 16, filter: "blur(10px)" },
+  hidden: { opacity: 0, transform: "translate3d(0, 16px, 0)", filter: "blur(10px)" },
   visible: {
     opacity: 1,
-    y: 0,
+    transform: "translate3d(0, 0, 0)",
     filter: "blur(0px)",
     transition: { delay: 0.45, duration: 0.9, ease: [0.2, 0.8, 0.2, 1] },
   },
 };
 
+const promptReveal: Variants = {
+  hidden: { opacity: 0, transform: "translate3d(48px, 0, 0)", filter: "blur(7px)" },
+  visible: {
+    opacity: 1,
+    transform: "translate3d(0, 0, 0)",
+    filter: "blur(0px)",
+    transition: { duration: 0.55, ease: [0.23, 1, 0.32, 1] },
+  },
+};
+
 export function HeroText() {
+  const reduceMotion = useReducedMotion();
+
   return (
     <motion.div
       variants={container}
-      initial="hidden"
+      initial={reduceMotion ? false : "hidden"}
       animate="visible"
-      className="max-w-xl mx-auto lg:mx-0 lg:pl-12 text-center lg:text-left space-y-6"
+      className="relative z-10 max-w-xl mx-auto lg:max-w-3xl lg:mx-0 lg:pl-12 text-center lg:text-left space-y-6"
     >
       <motion.div
         variants={fadeUp}
@@ -85,10 +97,10 @@ export function HeroText() {
         Natural language to{" "}
         <motion.span
           variants={highlight}
-          className="hatched-accent inline-block"
-          data-text="RP2040 firmware"
+          className="hatched-accent"
         >
-          RP2040 firmware
+          embedded firmware
+          <span aria-hidden className="hatched-accent__echo">embedded firmware</span>
         </motion.span>
       </motion.h1>
       <motion.p
@@ -96,13 +108,13 @@ export function HeroText() {
         className="text-base leading-relaxed"
         style={{ color: "var(--color-snow)" }}
       >
-        A multi-agent pipeline —{" "}
+        A multi-agent pipeline for{" "}
         <span style={{ color: HIGHLIGHT }}>pin routing</span>,{" "}
         <span style={{ color: HIGHLIGHT }}>clock trees</span>,{" "}
         <span style={{ color: HIGHLIGHT }}>register writes</span>, and{" "}
         <span style={{ color: HIGHLIGHT }}>live simulation</span> in one platform.
       </motion.p>
-      <motion.div variants={fadeUp} className="pt-2">
+      <motion.div variants={promptReveal} className="pt-2">
         <PromptInput />
       </motion.div>
     </motion.div>

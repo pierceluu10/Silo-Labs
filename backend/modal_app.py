@@ -18,6 +18,8 @@ image = (
     .env({"PICO_SDK_PATH": "/opt/pico-sdk"})
     .add_local_python_source("app")
     .add_local_dir("knowledge_data", remote_path="/root/knowledge_data")
+    # Prebuilt RAG index: run `python -m app.knowledge.rag` locally before `modal deploy`.
+    .add_local_dir(".chroma", remote_path="/root/.chroma")
 )
 
 app = modal.App("silo-labs", image=image)
