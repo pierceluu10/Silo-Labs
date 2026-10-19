@@ -9,14 +9,15 @@ from langgraph.graph import END, StateGraph
 from langgraph.types import RetryPolicy, Send
 
 from app.agents.clock_configurator import configure_clocks
-from app.agents.code_composer import compose_code, split_main_and_cmake
+from app.agents.code_composer import compose_code, is_core_file, split_main_and_cmake
 from app.agents.errata_checker import check_errata
 from app.agents.peripheral_configurator import configure_peripheral
 from app.agents.pinout_resolver import resolve_pinout
 from app.agents.requirements_parser import parse_requirements
 from app.agents.supervisor import plan_features
 from app.agents.wokwi_diagram_generator import generate_diagram
-from app.build.compiler import build_firmware
+from app.knowledge.graph import DEFAULT_MCU, current_mcu, get_graph, set_target_mcu
+from app.mcu import McuProfile, get_profile
 from app.schemas.state import (
     AgentName,
     ClockConfigRecord,
@@ -29,7 +30,7 @@ from app.schemas.state import (
     RunPlan,
     WireConnectionRecord,
 )
-from app.simulate.runner import run_simulation
+from app.simulate.runner import stream_simulation
 
 from .event_bus import emit
 from .metrics import finalize_metrics, instrumented, reset_aggregator
@@ -46,16 +47,31 @@ AGENT_PANELS: dict[AgentName, str] = {
 }
 
 # Short status lines for SSE (LangGraph still runs the real work in each node).
+# Placeholders are filled from the target MCU profile.
 REASONING_INTRO: dict[AgentName, str] = {
-    "supervisor": "→ Decomposing your prompt into independent feature plans.\n",
+    "supervisor": "→ Decomposing your prompt into independent feature plans for {mcu}.\n",
     "requirements_parser": "→ Parsing your prompt: peripheral, device, one-line spec.\n",
-    "pinout_resolver": "→ Picking SDA/SCL and instance on valid user GPIOs (not GP0/GP1).\n",
-    "clock_configurator": "→ Clocks: XOSC, PLL, CLK_SYS / CLK_PERI for 125 MHz bring-up.\n",
-    "peripheral_configurator": "→ Register field plan; the graph injects SVD addresses.\n",
-    "errata_checker": "→ Checking RP2040 errata against pins + register plan.\n",
-    "wokwi_diagram_generator": "→ Wokwi wiring: Pico ↔ parts (power, bus, GND).\n",
-    "code_composer": "→ Generating pico-sdk C + project CMake; USB stdio for logs.\n",
+    "pinout_resolver": "→ Picking pins + instance from {mcu} pin mux docs (RAG-grounded).\n",
+    "clock_configurator": "→ Clocks: {clock}.\n",
+    "peripheral_configurator": "→ Register field plan from retrieved {mcu} specs; the graph injects SVD addresses.\n",
+    "errata_checker": "→ Checking {mcu} errata against pins + register plan.\n",
+    "wokwi_diagram_generator": "→ Wokwi wiring: {board} ↔ parts (power, bus, GND).\n",
+    "code_composer": "→ Generating {sdk} firmware grounded on retrieved {mcu} docs.\n",
 }
+
+
+def _profile() -> McuProfile:
+    return get_profile(current_mcu())
+
+
+def _fill(template: str) -> str:
+    profile = _profile()
+    return template.format(
+        mcu=profile.display_name,
+        board=profile.board_name,
+        sdk=profile.sdk_label,
+        clock=profile.clock_hint.description,
+    )
 
 
 def _agent_start(agent: AgentName) -> float:
@@ -66,7 +82,7 @@ def _agent_start(agent: AgentName) -> float:
             "type": "agent_reasoning",
             "agent": agent,
             "panel": AGENT_PANELS[agent],
-            "delta": REASONING_INTRO[agent],
+            "delta": _fill(REASONING_INTRO[agent]),
         }
     )
     return time.monotonic()
@@ -116,21 +132,20 @@ _ACTIVITY_TEMPLATES: dict[AgentName, list[tuple[str, str]]] = {
     "pinout_resolver": [
         ("read-datasheet", "Reading device datasheet pinout"),
         ("pick-instance", "Selecting peripheral instance"),
-        ("validate-no-uart-debug", "Validating no GP0 / GP1 collision"),
+        ("validate-no-uart-debug", "Validating reserved / debug pins are untouched"),
     ],
     "clock_configurator": [
-        ("read-topology", "Reading RP2040 clock topology"),
-        ("xosc", "Configuring XOSC @ 12 MHz"),
-        ("pll-sys", "Bringing up PLL_SYS @ 125 MHz"),
-        ("clk-sys-peri", "Routing CLK_SYS / CLK_PERI"),
-        ("clk-ref", "Setting CLK_REF reference"),
+        ("read-topology", "Reading {mcu} clock tree"),
+        ("oscillator", "Configuring reference oscillator"),
+        ("pll", "Bringing up the system PLL"),
+        ("bus-clocks", "Routing CPU / peripheral bus clocks"),
     ],
     "peripheral_configurator": [
         ("read-svd", "Reading SVD for peripheral"),
         ("plan-fields", "Planning register field writes"),
     ],
     "errata_checker": [
-        ("cross-ref", "Cross-referencing RP2040 errata"),
+        ("cross-ref", "Cross-referencing {mcu} errata"),
         ("scan-pins", "Scanning pin + register plan"),
         ("mark-workarounds", "Marking workarounds (if any)"),
     ],
@@ -145,7 +160,7 @@ _ACTIVITY_TEMPLATES: dict[AgentName, list[tuple[str, str]]] = {
         ("includes", "Drafting includes + pin macros"),
         ("init", "Writing device init sequence"),
         ("loop", "Writing main loop with printf cadence"),
-        ("cmake", "Composing CMakeLists target"),
+        ("cmake", "Composing {sdk} build files"),
         ("stream", "Streaming code to editor"),
     ],
 }
@@ -153,13 +168,13 @@ _ACTIVITY_TEMPLATES: dict[AgentName, list[tuple[str, str]]] = {
 
 def _emit_pending(agent: AgentName) -> None:
     for key, label in _ACTIVITY_TEMPLATES.get(agent, []):
-        _activity(agent, key, label, "pending")
+        _activity(agent, key, _fill(label), "pending")
 
 
 def _finalize_pending(agent: AgentName) -> None:
     """Mark any leftover canonical items done at agent_complete time."""
     for key, label in _ACTIVITY_TEMPLATES.get(agent, []):
-        _activity(agent, key, label, "done")
+        _activity(agent, key, _fill(label), "done")
 
 
 @instrumented("supervisor")
@@ -311,6 +326,7 @@ async def _node_feature_pipeline(state: DesignState) -> dict:
             {
                 "type": "assign_pin",
                 "pin_number": p.pin_number,
+                "pin_name": p.pin_name,
                 "function": p.function.value,
                 "peripheral_instance": p.peripheral_instance,
                 "label": p.label,
@@ -320,7 +336,7 @@ async def _node_feature_pipeline(state: DesignState) -> dict:
         _activity(
             "pinout_resolver",
             f"pin-{feature.id}-{p.pin_number}",
-            f"[{feature.id}] GP{p.pin_number} → {p.peripheral_instance} {p.label}",
+            f"[{feature.id}] {p.pin_name} → {p.peripheral_instance} {p.label}",
             "done",
         )
         pin_records.append(PinAssignmentRecord.model_validate(p.model_dump()))
@@ -334,7 +350,7 @@ async def _node_feature_pipeline(state: DesignState) -> dict:
     _activity(
         "pinout_resolver",
         f"validate-no-uart-debug-{feature.id}",
-        f"[{feature.id}] No GP0/GP1 collisions",
+        f"[{feature.id}] Pins checked against {_profile().display_name} pin rules",
         "done",
     )
     _agent_complete("pinout_resolver", t_pin)
@@ -355,7 +371,7 @@ async def _node_feature_pipeline(state: DesignState) -> dict:
         _activity(
             "peripheral_configurator",
             f"plan-fields-{feature.id}",
-            f"[{feature.id}] Using pico-sdk high-level APIs (no direct register writes)",
+            f"[{feature.id}] Using {_profile().sdk_label} driver APIs (no direct register writes)",
             "done",
         )
     else:
@@ -461,22 +477,22 @@ async def _node_clocks(state: DesignState) -> DesignState:
     t = _agent_start("clock_configurator")
     _emit_pending("clock_configurator")
     assert state.requirements is not None
-    _activity("clock_configurator", "read-topology", "Reading RP2040 clock topology", "done")
+    _activity("clock_configurator", "read-topology", _fill("Reading {mcu} clock tree"), "done")
     clocks = await configure_clocks(state.requirements)
     for c in clocks:
         emit(
             {
                 "type": "configure_clock",
-                "clock_domain": c.clock_domain.value,
-                "source": c.source.value,
+                "clock_domain": c.clock_domain,
+                "source": c.source,
                 "freq_hz": c.freq_hz,
                 "divider": c.divider,
             }
         )
         _activity(
             "clock_configurator",
-            f"clk-{c.clock_domain.value}",
-            f"{c.clock_domain.value} ← {c.source.value} @ {c.freq_hz / 1_000_000:g} MHz",
+            f"clk-{c.clock_domain}",
+            f"{c.clock_domain} ← {c.source} @ {c.freq_hz / 1_000_000:g} MHz",
             "done",
         )
     _finalize_pending("clock_configurator")
@@ -491,7 +507,7 @@ async def _node_errata(state: DesignState) -> DesignState:
     t = _agent_start("errata_checker")
     _emit_pending("errata_checker")
     assert state.requirements is not None
-    _activity("errata_checker", "cross-ref", "Cross-referencing RP2040 errata", "done")
+    _activity("errata_checker", "cross-ref", _fill("Cross-referencing {mcu} errata"), "done")
     warnings = await check_errata(
         state.requirements, list(state.pin_assignments), list(state.register_writes)
     )
@@ -549,13 +565,13 @@ async def _node_code(state: DesignState) -> DesignState:
     state.generated_code = main_c
     state.cmake_content = cmake
 
-    extra_files = [f.path for f in files if f.path not in {"main.c", "CMakeLists.txt"}]
+    extra_files = [f.path for f in files if not is_core_file(f.path)]
     _activity("code_composer", "init", f"Wrote {state.requirements.device_name} init sequence", "done")
     _activity("code_composer", "loop", "Wrote main loop with printf cadence", "done")
     _activity(
         "code_composer",
         "cmake",
-        f"Composed CMakeLists + {len(extra_files)} extra file(s)" if extra_files else "Composed CMakeLists target",
+        f"Composed build files + {len(extra_files)} extra file(s)" if extra_files else "Composed build files",
         "done",
     )
     emit(
@@ -591,7 +607,18 @@ async def _node_build(state: DesignState) -> DesignState:
             GeneratedFile(path="main.c", content=state.generated_code),
             GeneratedFile(path="CMakeLists.txt", content=state.cmake_content),
         ]
-    result = await build_firmware(files)
+    profile = _profile()
+    if profile.build_firmware is None:
+        message = (
+            f"No {profile.sdk_label} toolchain in this deployment — "
+            f"{len(files)} source file(s) emitted for {profile.display_name}, build skipped."
+        )
+        # A missing toolchain is a deployment limit, not a firmware error — log it, don't fail the run.
+        emit({"type": "build_log", "line": message})
+        state.build_stdout = message
+        state.build_success = False
+        return state
+    result = await profile.build_firmware(files)
     for line in result.stdout.splitlines():
         emit({"type": "build_log", "line": line})
     state.build_stdout = result.stdout
@@ -612,11 +639,18 @@ async def _node_build(state: DesignState) -> DesignState:
 @instrumented("simulate")
 async def _node_simulate(state: DesignState) -> DesignState:
     emit({"type": "simulate_start"})
-    sim = await run_simulation(state.uf2_artifact_path, state.wokwi_diagram)
-    for line in sim.log.splitlines():
-        emit({"type": "simulate_output", "line": line})
-    state.simulate_log = sim.log
-    state.simulate_mode = sim.mode  # type: ignore[assignment]
+    lines: list[str] = []
+    profile = _profile()
+    if profile.build_firmware is None:
+        # Fixture captures are RP2040 runs; replaying them for an uncompiled design would lie.
+        lines.append(f"[sim] No compiled {profile.board_name} image — simulation skipped.")
+        emit({"type": "simulate_output", "line": lines[0]})
+    else:
+        async for line in stream_simulation(state.uf2_artifact_path, state.wokwi_diagram):
+            lines.append(line)
+            emit({"type": "simulate_output", "line": line})
+    state.simulate_log = "\n".join(lines)
+    state.simulate_mode = "fixture"
     state.pipeline_complete = True
     finalize_metrics(state)
     return state
@@ -629,7 +663,7 @@ _MAX_ERRATA_RETRIES = 1
 def _route_after_build(state: DesignState):
     """Conditional edge after build: success -> simulate, failure -> retry code (max 1)."""
 
-    if state.build_success:
+    if state.build_success or _profile().build_firmware is None:
         return "simulate"
     if state.code_retries < _MAX_CODE_RETRIES:
         # bump the retry counter so the next failure goes to simulate (giving up)
@@ -692,10 +726,8 @@ async def _node_render_diagram(state: DesignState) -> DesignState:
     if not state.wires or state.requirements is None:
         return state
     from app.agents.wokwi_diagram_generator import _render_diagram_json
-    from app.knowledge.graph import get_graph
-
     device_key = state.requirements.device_name.lower()
-    diagram = _render_diagram_json(device_key, [w for w in state.wires])
+    diagram = _render_diagram_json(_profile().board_part, device_key, list(state.wires))
     state.wokwi_diagram = diagram
     spec = get_graph().get_wokwi_component(device_key)
     if spec is not None:
@@ -773,12 +805,17 @@ def _runner_config(session_id: str) -> dict:
     return {"configurable": {"thread_id": session_id}}
 
 
-async def run_pipeline(user_prompt: str, session_id: str | None = None) -> DesignState:
+async def run_pipeline(
+    user_prompt: str, session_id: str | None = None, target_mcu: str = DEFAULT_MCU
+) -> DesignState:
     sid = session_id or uuid.uuid4().hex
+    get_profile(target_mcu)  # fail fast on unknown MCUs
+    # Every node (and the schema validators they trigger) inherits this context.
+    set_target_mcu(target_mcu)
     # Fresh metrics for this session — old aggregator entries (e.g. from a
     # prior crashed run with the same id) are wiped so we don't double-count.
     reset_aggregator(sid)
-    state = DesignState(session_id=sid, user_prompt=user_prompt)
+    state = DesignState(session_id=sid, user_prompt=user_prompt, target_mcu=target_mcu)
     pipeline = build_pipeline()
     result = await pipeline.ainvoke(state, _runner_config(sid))
     if isinstance(result, DesignState):
@@ -793,6 +830,7 @@ async def resume_pipeline(session_id: str) -> DesignState | None:
     snapshot = pipeline.get_state(_runner_config(session_id))
     if snapshot is None or not snapshot.values:
         return None
+    set_target_mcu(snapshot.values.get("target_mcu", DEFAULT_MCU))
     # Passing None as the input tells LangGraph to continue from the saved state.
     result = await pipeline.ainvoke(None, _runner_config(session_id))
     if isinstance(result, DesignState):

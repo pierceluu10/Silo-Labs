@@ -2,15 +2,15 @@
 
 import { useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { useSiloStore } from "@/lib/store";
+import { DEFAULT_BOARD_PART, useSiloStore } from "@/lib/store";
 import type { WireEvent } from "@/lib/store";
 
 // SVG canvas. Tall enough to fit a stack of labeled pin tabs.
 const VIEW_W = 360;
 const VIEW_H = 320;
 
-// Pico body geometry — left of the canvas. Pin tabs come out of its right edge.
-const PICO = { x: 38, y: 38, w: 110, h: 244, rx: 8 };
+// MCU board geometry — left of the canvas. Pin tabs come out of its right edge.
+const BOARD = { x: 38, y: 38, w: 110, h: 244, rx: 8 };
 // Device body — right side of the canvas. Pin tabs come out of its left edge.
 const DEVICE = { x: 230, y: 78, w: 96, h: 168, rx: 6 };
 
@@ -26,13 +26,12 @@ interface PinAnchor {
   label: string;
 }
 
-/** Stable comparator so wires render in a deterministic top-to-bottom order. */
-function pinSortKey(p: string): number {
-  if (p.startsWith("GP")) return Number(p.slice(2)) || 0;
-  if (p === "3V3") return -2;
-  if (p === "VBUS" || p === "VSYS") return -1;
-  if (p.startsWith("GND")) return 99;
-  return 50;
+const POWER_PINS = new Set(["3V3", "5V", "VBUS", "VSYS", "VIN"]);
+
+/** Power first, ground last; signal pins (GP4, PB7, 21) in natural order between. */
+function compareBoardPins(a: string, b: string): number {
+  const rank = (p: string) => (POWER_PINS.has(p) ? 0 : p.startsWith("GND") ? 2 : 1);
+  return rank(a) - rank(b) || a.localeCompare(b, undefined, { numeric: true });
 }
 
 function deviceSortKey(p: string): number {
@@ -42,31 +41,31 @@ function deviceSortKey(p: string): number {
   return i === -1 ? 100 : i;
 }
 
-function buildAnchors(wires: WireEvent[]): {
-  pico: Map<string, PinAnchor>;
+function buildAnchors(wires: WireEvent[], boardId: string): {
+  board: Map<string, PinAnchor>;
   device: Map<string, PinAnchor>;
 } {
-  const picoPins = Array.from(
+  const boardPins = Array.from(
     new Set(
       wires
-        .map((w) => (w.from_component === "pico" ? w.from_pin : w.to_component === "pico" ? w.to_pin : null))
+        .map((w) => (w.from_component === boardId ? w.from_pin : w.to_component === boardId ? w.to_pin : null))
         .filter((p): p is string => p !== null),
     ),
-  ).sort((a, b) => pinSortKey(a) - pinSortKey(b));
+  ).sort(compareBoardPins);
 
   const devicePins = Array.from(
     new Set(
       wires
-        .map((w) => (w.from_component !== "pico" ? w.from_pin : w.to_component !== "pico" ? w.to_pin : null))
+        .map((w) => (w.from_component !== boardId ? w.from_pin : w.to_component !== boardId ? w.to_pin : null))
         .filter((p): p is string => p !== null),
     ),
   ).sort((a, b) => deviceSortKey(a) - deviceSortKey(b));
 
-  const pico = new Map<string, PinAnchor>();
-  const picoStep = (PICO.h - 32) / Math.max(1, picoPins.length - 1 || 1);
-  picoPins.forEach((pin, i) => {
-    const y = PICO.y + 16 + (picoPins.length === 1 ? PICO.h / 2 - 16 : i * picoStep);
-    pico.set(pin, { x: PICO.x + PICO.w + TAB_W, y, label: pin });
+  const board = new Map<string, PinAnchor>();
+  const boardStep = (BOARD.h - 32) / Math.max(1, boardPins.length - 1 || 1);
+  boardPins.forEach((pin, i) => {
+    const y = BOARD.y + 16 + (boardPins.length === 1 ? BOARD.h / 2 - 16 : i * boardStep);
+    board.set(pin, { x: BOARD.x + BOARD.w + TAB_W, y, label: pin });
   });
 
   const device = new Map<string, PinAnchor>();
@@ -76,15 +75,16 @@ function buildAnchors(wires: WireEvent[]): {
     device.set(pin, { x: DEVICE.x - TAB_W, y, label: pin });
   });
 
-  return { pico, device };
+  return { board, device };
 }
 
 function wireEndpoints(
   wire: WireEvent,
   anchors: ReturnType<typeof buildAnchors>,
+  boardId: string,
 ): { from: PinAnchor; to: PinAnchor } | null {
-  const fromMap = wire.from_component === "pico" ? anchors.pico : anchors.device;
-  const toMap = wire.to_component === "pico" ? anchors.pico : anchors.device;
+  const fromMap = wire.from_component === boardId ? anchors.board : anchors.device;
+  const toMap = wire.to_component === boardId ? anchors.board : anchors.device;
   const from = fromMap.get(wire.from_pin);
   const to = toMap.get(wire.to_pin);
   if (!from || !to) return null;
@@ -101,32 +101,34 @@ function curvedPath(from: PinAnchor, to: PinAnchor, idx: number): string {
 
 export function BreadboardView() {
   const wires = useSiloStore((s) => s.wires);
+  const target = useSiloStore((s) => s.target);
+  const boardId = target?.boardPart ?? DEFAULT_BOARD_PART;
   const [hovered, setHovered] = useState<number | null>(null);
 
-  const anchors = useMemo(() => buildAnchors(wires), [wires]);
+  const anchors = useMemo(() => buildAnchors(wires, boardId), [wires, boardId]);
 
   return (
     <div className="relative w-full h-full">
       <svg viewBox={`0 0 ${VIEW_W} ${VIEW_H}`} className="w-full h-full">
-        {/* Pico body */}
+        {/* MCU board body */}
         <rect
-          x={PICO.x}
-          y={PICO.y}
-          width={PICO.w}
-          height={PICO.h}
-          rx={PICO.rx}
+          x={BOARD.x}
+          y={BOARD.y}
+          width={BOARD.w}
+          height={BOARD.h}
+          rx={BOARD.rx}
           fill="var(--color-carbon)"
           stroke="var(--color-charcoal)"
         />
         <text
-          x={PICO.x + PICO.w / 2}
-          y={PICO.y + 16}
+          x={BOARD.x + BOARD.w / 2}
+          y={BOARD.y + 16}
           textAnchor="middle"
           fontSize={9}
           fill="var(--color-steel)"
           fontFamily="var(--font-mono)"
         >
-          Pi Pico
+          {target?.boardName ?? "Pi Pico"}
         </text>
 
         {/* Device body */}
@@ -150,11 +152,11 @@ export function BreadboardView() {
           device
         </text>
 
-        {/* Pico pin tabs (right edge of Pico) */}
-        {Array.from(anchors.pico.values()).map((p) => (
-          <g key={`pico-${p.label}`}>
+        {/* Board pin tabs (right edge of the board) */}
+        {Array.from(anchors.board.values()).map((p) => (
+          <g key={`board-${p.label}`}>
             <rect
-              x={PICO.x + PICO.w}
+              x={BOARD.x + BOARD.w}
               y={p.y - TAB_H / 2}
               width={TAB_W}
               height={TAB_H}
@@ -163,7 +165,7 @@ export function BreadboardView() {
               stroke="var(--color-charcoal)"
             />
             <text
-              x={PICO.x + PICO.w + TAB_W / 2}
+              x={BOARD.x + BOARD.w + TAB_W / 2}
               y={p.y + 3}
               textAnchor="middle"
               fontSize={7}
@@ -202,7 +204,7 @@ export function BreadboardView() {
 
         {/* Wires */}
         {wires.map((w, i) => {
-          const ep = wireEndpoints(w, anchors);
+          const ep = wireEndpoints(w, anchors, boardId);
           if (!ep) return null;
           const isHovered = hovered === i;
           const dim = hovered !== null && !isHovered;
@@ -231,7 +233,7 @@ export function BreadboardView() {
           (() => {
             const w = wires[hovered];
             if (!w) return null;
-            const ep = wireEndpoints(w, anchors);
+            const ep = wireEndpoints(w, anchors, boardId);
             if (!ep) return null;
             const mx = (ep.from.x + ep.to.x) / 2;
             const my = (ep.from.y + ep.to.y) / 2 - 10;

@@ -60,7 +60,7 @@ export function FullscreenOverlay() {
             onClick={(e) => e.stopPropagation()}
           >
             {target === "code" ? (
-              <AgentPanel agent="code_composer" title="Agent — Code" fullscreen>
+              <AgentPanel agent="code_composer" title="Agent / Code" fullscreen>
                 {VISUALS.code}
               </AgentPanel>
             ) : (
@@ -68,12 +68,6 @@ export function FullscreenOverlay() {
                 {VISUALS[target]}
               </AgentPanel>
             )}
-            <p
-              className="absolute -bottom-7 left-0 right-0 text-center text-[10px] uppercase tracking-[0.2em]"
-              style={{ color: "var(--color-steel)" }}
-            >
-              Press Esc to close
-            </p>
           </motion.div>
         </motion.div>
       )}

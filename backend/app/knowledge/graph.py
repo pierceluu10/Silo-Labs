@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
@@ -8,6 +9,7 @@ from typing import Any
 import networkx as nx
 
 from .loader import (
+    KNOWLEDGE_DIR,
     PeripheralSpec,
     load_clock_topology,
     load_errata,
@@ -25,6 +27,27 @@ NODE_ERRATUM = "erratum"
 NODE_WOKWI = "wokwi_component"
 
 PERIPHERAL_FAMILIES = ("I2C", "SPI", "UART", "PWM", "ADC", "SIO")
+
+DEFAULT_MCU = "rp2040"
+# Pin mux, clock tree and errata are hand-modeled only for the RP2040; other
+# MCUs get SVD-only graphs and lean on RAG retrieval for the rest.
+HAND_MODELED_MCU = "rp2040"
+
+# Target MCU for the running pipeline. Set once per run so deep call sites
+# (e.g. the SetRegister validator) resolve against the right SVD.
+_target_mcu: ContextVar[str] = ContextVar("target_mcu", default=DEFAULT_MCU)
+
+
+def set_target_mcu(mcu: str) -> Token[str]:
+    return _target_mcu.set(mcu)
+
+
+def reset_target_mcu(token: Token[str]) -> None:
+    _target_mcu.reset(token)
+
+
+def current_mcu() -> str:
+    return _target_mcu.get()
 
 
 class PinConflictError(ValueError):
@@ -45,13 +68,13 @@ class PinAssignment:
     function: str
 
 
-class RPGraph:
-    """NetworkX-backed knowledge graph for the RP2040.
+class McuGraph:
+    """NetworkX-backed knowledge graph for one MCU.
 
-    The graph composes three data sources:
-      * `rp2040.svd` → peripherals, registers, and fields with real addresses.
-      * `pin_functions.json` → GPIO mux options per pin.
-      * `clock_topology.json` → clock sources, PLLs, and domain edges.
+    The graph composes these data sources:
+      * `<mcu>.svd` → peripherals, registers, and fields with real addresses.
+      * `pin_functions.json` → GPIO mux options per pin (RP2040 only).
+      * `clock_topology.json` → clock sources, PLLs, and domain edges (RP2040 only).
 
     Register addresses are authoritative — the LLM is never trusted to produce
     them. Agents request a register by (peripheral, register) name and the
@@ -60,12 +83,14 @@ class RPGraph:
 
     def __init__(
         self,
+        mcu: str,
         peripherals: dict[str, PeripheralSpec],
         pin_functions: dict[int, dict[str, Any]],
         clock_topology: dict,
         errata: list[dict],
         wokwi_components: dict[str, dict],
     ) -> None:
+        self.mcu = mcu
         self._peripherals = peripherals
         self._pin_functions = pin_functions
         self._clock_topology = clock_topology
@@ -74,12 +99,17 @@ class RPGraph:
         self._g = self._build_graph()
 
     @classmethod
-    def load(cls) -> RPGraph:
+    def load(cls, mcu: str) -> McuGraph:
+        svd_path = KNOWLEDGE_DIR / f"{mcu}.svd"
+        if not svd_path.exists():
+            raise FileNotFoundError(f"No SVD for MCU {mcu!r} at {svd_path}")
+        hand_modeled = mcu == HAND_MODELED_MCU
         return cls(
-            peripherals=load_svd_peripherals(),
-            pin_functions=load_pin_functions(),
-            clock_topology=load_clock_topology(),
-            errata=load_errata(),
+            mcu=mcu,
+            peripherals=load_svd_peripherals(svd_path),
+            pin_functions=load_pin_functions() if hand_modeled else {},
+            clock_topology=load_clock_topology() if hand_modeled else {"nodes": [], "edges": []},
+            errata=load_errata() if hand_modeled else [],
             wokwi_components=load_wokwi_components(),
         )
 
@@ -245,7 +275,7 @@ class RPGraph:
         else:
             wanted = {p.upper() for p in peripherals}
             names = [n for n in sorted(self._peripherals) if n in wanted]
-        lines: list[str] = ["# RP2040 peripheral summary (from SVD)"]
+        lines: list[str] = [f"# {self.mcu.upper()} peripheral summary (from SVD)"]
         for name in names:
             pe = self._peripherals[name]
             lines.append(f"\n## {name} @ 0x{pe.base_address:08x}")
@@ -261,9 +291,14 @@ class RPGraph:
         return "\n".join(lines)
 
 
-@lru_cache(maxsize=1)
-def get_graph() -> RPGraph:
-    return RPGraph.load()
+@lru_cache(maxsize=8)
+def _load_graph(mcu: str) -> McuGraph:
+    return McuGraph.load(mcu)
+
+
+def get_graph(mcu: str | None = None) -> McuGraph:
+    """Graph for ``mcu``, defaulting to the running pipeline's target MCU."""
+    return _load_graph(mcu or current_mcu())
 
 
 _I2C_SIGNALS = {"SDA", "SCL"}

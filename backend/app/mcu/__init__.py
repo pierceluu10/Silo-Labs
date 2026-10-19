@@ -1,13 +1,12 @@
-"""MCU profile abstraction.
+"""MCU profile registry.
 
-The pipeline used to assume RP2040 directly: Pico SDK calls hardcoded into
-prompts, "GP4 / GP5 / 125 MHz" baked into reasoning text, build runner that
-shelled out to cmake + arm-none-eabi-gcc no matter what.
-
-This package separates the orchestration (planner / agents / metrics, all in
-``app.graph``) from chip-specific knowledge. Adding a new MCU is
-"implement ``McuProfile`` and register it" — no edits to the pipeline.
+The pipeline orchestration (planner / agents / metrics, all in ``app.graph``)
+is chip-agnostic; everything chip-specific lives in a ``McuProfile``. Adding an
+MCU is "drop ``knowledge_data/<mcu>.svd`` (+ optional vendor_docs/<mcu>.md),
+define a profile, register it, rebuild the RAG index" — no pipeline edits.
 """
 
 from .profile import McuProfile, get_profile, list_profiles, register_profile  # noqa: F401
-from .rp2040 import RP2040_PROFILE  # noqa: F401  (registers itself on import)
+from .esp32 import ESP32_PROFILE  # noqa: F401  (each module registers itself on import)
+from .rp2040 import RP2040_PROFILE  # noqa: F401
+from .stm32f103 import STM32F103_PROFILE  # noqa: F401

@@ -6,14 +6,17 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from app.graph.event_bus import EventBus, set_bus
+from app.demo_pipeline import DEMO_PROMPT, run_demo_pipeline
 from app.graph.pipeline import resume_pipeline, run_pipeline
+from app.knowledge.graph import DEFAULT_MCU, set_target_mcu
+from app.mcu import get_profile, list_profiles
 from app.schemas.state import DesignState
 
 # Allow common dev hostnames; EventSource is strict about CORS.
@@ -43,16 +46,46 @@ async def health() -> dict[str, str]:
 class GenerateRequest(BaseModel):
     prompt: str
     session_id: str | None = None
+    mcu: str = DEFAULT_MCU
+
+
+def _validate_mcu(mcu: str) -> None:
+    if mcu not in list_profiles():
+        raise HTTPException(status_code=400, detail=f"Unknown MCU {mcu!r}. Supported: {list_profiles()}")
+
+
+async def _run(prompt: str, session_id: str, mcu: str) -> DesignState:
+    """The canned DHT22 demo replays for its exact prompt on RP2040; everything else runs the agents."""
+    set_target_mcu(mcu)
+    if mcu == DEFAULT_MCU and prompt.strip() == DEMO_PROMPT:
+        return await run_demo_pipeline(session_id)
+    return await run_pipeline(prompt, session_id, target_mcu=mcu)
+
+
+@app.get("/api/mcus")
+async def mcus() -> list[dict[str, str | list[str] | bool]]:
+    return [
+        {
+            "name": profile.name,
+            "display_name": profile.display_name,
+            "board_name": profile.board_name,
+            "sdk": profile.sdk_label,
+            "peripheral_families": list(profile.supported_peripheral_families),
+            "buildable": profile.build_firmware is not None,
+        }
+        for profile in map(get_profile, list_profiles())
+    ]
 
 
 @app.post("/api/generate")
 async def generate(req: GenerateRequest) -> DesignState:
-    state = await run_pipeline(req.prompt, req.session_id)
+    _validate_mcu(req.mcu)
+    state = await _run(req.prompt, req.session_id or uuid.uuid4().hex, req.mcu)
     _sessions[state.session_id] = state
     return state
 
 
-async def _stream_pipeline(prompt: str, session_id: str) -> AsyncIterator[dict]:
+async def _stream_pipeline(prompt: str, session_id: str, mcu: str) -> AsyncIterator[dict]:
     bus = EventBus()
     set_bus(bus)
 
@@ -61,8 +94,19 @@ async def _stream_pipeline(prompt: str, session_id: str) -> AsyncIterator[dict]:
         set_bus(bus)
         started = time.monotonic()
         try:
-            bus.emit({"type": "session_ready", "session_id": session_id})
-            state = await run_pipeline(prompt, session_id)
+            profile = get_profile(mcu)
+            bus.emit(
+                {
+                    "type": "session_ready",
+                    "session_id": session_id,
+                    "target_mcu": profile.name,
+                    "mcu_display_name": profile.display_name,
+                    "board_name": profile.board_name,
+                    "board_part": profile.board_part,
+                    "sdk": profile.sdk_label,
+                }
+            )
+            state = await _run(prompt, session_id, mcu)
             _sessions[state.session_id] = state
             bus.emit(
                 {
@@ -86,9 +130,12 @@ async def _stream_pipeline(prompt: str, session_id: str) -> AsyncIterator[dict]:
 
 
 @app.get("/api/stream")
-async def stream(prompt: str = Query(...), session_id: str | None = None) -> EventSourceResponse:
+async def stream(
+    prompt: str = Query(...), session_id: str | None = None, mcu: str = DEFAULT_MCU
+) -> EventSourceResponse:
+    _validate_mcu(mcu)
     sid = session_id or uuid.uuid4().hex
-    return EventSourceResponse(_stream_pipeline(prompt, sid))
+    return EventSourceResponse(_stream_pipeline(prompt, sid, mcu))
 
 
 @app.get("/api/artifacts/{session_id}/firmware.uf2")

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
     wokwi_cli_token: str = Field(default="", alias="WOKWI_CLI_TOKEN")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    chroma_path: Path = Field(default=BACKEND_DIR / ".chroma", alias="CHROMA_PATH")
 
     sonnet_model: str = "claude-sonnet-4-6"
     haiku_model: str = "claude-haiku-4-5-20251001"

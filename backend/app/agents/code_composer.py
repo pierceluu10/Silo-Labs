@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import PurePosixPath
+
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
@@ -21,9 +23,9 @@ class _GeneratedFileLLM(BaseModel):
 class MultiFileProject(BaseModel):
     """Generated project as an explicit file map.
 
-    main.c and CMakeLists.txt are required (the build wrapper expects them).
-    Anything else is allowed: extra .c/.h drivers, .pio programs, even nested
-    directories like ``drivers/ws2812.c``.
+    The entry point and root CMakeLists.txt are required (per-MCU rules live in
+    the profile prompt). Anything else is allowed: extra .c/.h drivers, .pio
+    programs, nested directories like ``drivers/ws2812.c`` or ``main/main.c``.
     """
 
     files: list[_GeneratedFileLLM] = Field(min_length=2)
@@ -32,36 +34,20 @@ class MultiFileProject(BaseModel):
 SYSTEM_BASE = """You are the Code Composer.
 
 Output a complete, compilable embedded firmware project as a list of files.
-The project MUST include at minimum:
-  - "main.c"          — entry point with a forever loop
-  - "CMakeLists.txt"  — project-specific build lines only (see rules)
+The required files and build-file rules for the target are in the "Target MCU"
+section below — follow them exactly.
 
 You MAY include any number of additional files when the task warrants it:
   - "drivers/<device>.c" + "drivers/<device>.h" for cleanly separated drivers
-  - "<peripheral>.pio" for PIO programs
   - "include/config.h" for shared constants
 Use realistic paths; the build wrapper writes them all into one project tree.
 
-CMakeLists.txt rules — emit ONLY the project-specific lines below; nothing else:
-  add_executable(firmware main.c drivers/foo.c ...)   # list every .c you ship
-  target_link_libraries(firmware pico_stdlib hardware_i2c ...)  # only what you use
-  pico_enable_stdio_usb(firmware 1)
-  pico_enable_stdio_uart(firmware 0)
-  pico_add_extra_outputs(firmware)
-  # PIO programs need pico_generate_pio_header(firmware ${CMAKE_CURRENT_LIST_DIR}/foo.pio)
-
-STRICTLY FORBIDDEN in CMakeLists.txt content:
-- cmake_minimum_required(...)        — the wrapper sets it.
-- project(...)                       — the wrapper sets it.
-- include(pico_sdk_import.cmake)     — the wrapper adds it.
-- pico_sdk_init()                    — the wrapper calls it.
-- find_package(...)                  — pico-sdk libraries link by name.
-- set(PICO_SDK_PATH ...) / set(PICO_BOARD ...)
-
 Constraints across all files:
-- Use the exact GP pin numbers from the pin assignments.
-- Initialise stdio over USB so printf reaches the simulator.
-- main() loops forever and prints periodic readings via printf.
+- Use the exact pins from the pin assignments (pin_name is the chip's own pin label).
+- Ground register names, bit fields and pin functions in the retrieved documentation;
+  never invent registers that are not in the SVD context.
+- Route printf to the serial console the target section names.
+- The main loop runs forever and prints periodic readings via printf.
 
 NO markdown fences, NO prose, NO extra commentary — just file content in the structured output.
 """
@@ -86,9 +72,14 @@ async def compose_code(
     sys_msg = (
         SYSTEM_BASE
         + "\n\n# Target MCU\n"
-        + profile.code_composer_system_prompt()
+        + profile.code_composer_prompt
         + "\n\n# Chip SVD context\n"
         + profile.svd_summary(requirements.peripheral_type)
+        + "\n\n"
+        + profile.grounding(
+            f"{requirements.peripheral_type} {requirements.device_name} driver init "
+            f"{requirements.description}"
+        )
     )
     if build_error_hint:
         sys_msg += (
@@ -124,8 +115,8 @@ async def compose_code(
                 content=(
                     "Your previous reply did not match the schema. "
                     "Return JSON with a top-level 'files' array containing "
-                    "at minimum {path: 'main.c', content: '...'} and "
-                    "{path: 'CMakeLists.txt', content: '...'}. No prose."
+                    "every required file from the Target MCU section as "
+                    "{path: '...', content: '...'}. No prose."
                 )
             )
             result = await llm.ainvoke([SystemMessage(content=sys_msg), HumanMessage(content=user), nudge])
@@ -138,14 +129,22 @@ async def compose_code(
     ]
 
 
-def split_main_and_cmake(files: list[GeneratedFile]) -> tuple[str, str]:
-    """Backwards-compat shim — returns (main_c, cmake) for callers that still want them."""
+ENTRY_FILENAMES = ("main.c", "main.cpp")
+ROOT_BUILD_FILE = "CMakeLists.txt"
 
-    main_c = ""
-    cmake = ""
-    for f in files:
-        if f.path == "main.c":
-            main_c = f.content
-        elif f.path == "CMakeLists.txt":
-            cmake = f.content
+
+def _is_entry(path: str) -> bool:
+    # ESP-IDF puts the entry point in main/main.c; pico-sdk and bare-metal at the root.
+    return PurePosixPath(path).name in ENTRY_FILENAMES
+
+
+def is_core_file(path: str) -> bool:
+    return path == ROOT_BUILD_FILE or _is_entry(path)
+
+
+def split_main_and_cmake(files: list[GeneratedFile]) -> tuple[str, str]:
+    """Return (entry-point source, root CMakeLists.txt) — the editor streams the former."""
+
+    main_c = next((f.content for f in files if _is_entry(f.path)), "")
+    cmake = next((f.content for f in files if f.path == ROOT_BUILD_FILE), "")
     return main_c, cmake

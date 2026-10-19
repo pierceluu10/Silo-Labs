@@ -6,7 +6,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from app.config import get_settings
 from app.schemas.state import Requirements
 
-SYSTEM_PROMPT = """You are the Requirements Parser for an RP2040 firmware generator.
+SYSTEM_PROMPT = """You are the Requirements Parser for a multi-MCU embedded firmware generator.
 
 Your job: read a user's natural-language firmware request and extract a structured Requirements object.
 

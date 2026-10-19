@@ -13,6 +13,11 @@ Severity = Literal["info", "warning", "critical"]
 class SessionReady(BaseModel):
     type: Literal["session_ready"] = "session_ready"
     session_id: str
+    target_mcu: str
+    mcu_display_name: str
+    board_name: str
+    board_part: str
+    sdk: str
 
 
 class AgentStart(BaseModel):
@@ -37,6 +42,7 @@ class AgentComplete(BaseModel):
 class AssignPinEvent(BaseModel):
     type: Literal["assign_pin"] = "assign_pin"
     pin_number: int
+    pin_name: str
     function: str
     peripheral_instance: str
     label: str

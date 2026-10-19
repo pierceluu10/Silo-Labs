@@ -38,6 +38,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Bake the ChromaDB RAG index (SVD registers + vendor docs) into the image.
+RUN python -m app.knowledge.rag
+
 EXPOSE 8000
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

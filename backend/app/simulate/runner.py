@@ -14,6 +14,7 @@ def _wokwi_token() -> str:
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
 LINE_DELAY_MS = 50
+DHT22_LINE_DELAY_MS = 1000
 
 # Fixtures are matched by a marker substring in the diagram JSON or peripheral
 # hint. When no fixture matches, we DO NOT replay an unrelated capture (that
@@ -21,6 +22,7 @@ LINE_DELAY_MS = 50
 # build-only summary.
 _FIXTURES: tuple[tuple[str, Path], ...] = (
     ("bme280", FIXTURE_DIR / "bme280_ssd1306_output.txt"),
+    ("dht22", FIXTURE_DIR / "dht22_serial_output.txt"),
 )
 
 
@@ -60,9 +62,10 @@ async def stream_simulation(
 
     fixture = _select_fixture(diagram_json)
     if fixture is not None:
+        fixture_delay_ms = DHT22_LINE_DELAY_MS if fixture.stem.startswith("dht22") else line_delay_ms
         for line in fixture.read_text().splitlines():
             yield line
-            await asyncio.sleep(line_delay_ms / 1000.0)
+            await asyncio.sleep(fixture_delay_ms / 1000.0)
         return
 
     built = "(uf2 ready)" if (uf2_path and Path(uf2_path).exists()) else "(no uf2)"
