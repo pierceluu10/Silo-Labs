@@ -140,6 +140,9 @@ class DesignState(BaseModel):
     # Set by the supervisor's Send so each fan-out branch knows which feature
     # it's currently working on. Defaults to None on the parent state.
     current_feature_id: str | None = None
+    # feature_id -> conflict hint for features whose pins collided at the join.
+    # On a re-dispatched branch it holds only that branch's own entry.
+    pin_conflicts: dict[str, str] = Field(default_factory=dict)
     pin_assignments: list[PinAssignmentRecord] = Field(default_factory=list)
     clock_configs: list[ClockConfigRecord] = Field(default_factory=list)
     register_writes: list[RegisterWriteRecord] = Field(default_factory=list)
@@ -160,6 +163,7 @@ class DesignState(BaseModel):
     # Retry budgets — incremented by conditional edges so we don't loop forever.
     code_retries: int = 0
     errata_retries: int = 0
+    pin_conflict_retries: int = 0
     last_build_error_hint: str | None = None
     last_errata_hint: str | None = None
     metrics: RunMetrics | None = None

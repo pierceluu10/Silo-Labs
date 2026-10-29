@@ -32,7 +32,7 @@ Constraints:
 """
 
 
-async def resolve_pinout(requirements: Requirements) -> list[AssignPin]:
+async def resolve_pinout(requirements: Requirements, conflict_hint: str | None = None) -> list[AssignPin]:
     profile = target_profile()
     options = profile.pinout_options(requirements.peripheral_type)
 
@@ -44,6 +44,8 @@ async def resolve_pinout(requirements: Requirements) -> list[AssignPin]:
         f"{json.dumps(options, indent=2) if options else 'not hand-modeled; use the retrieved pin mux docs'}\n\n"
         f"Choose ONE peripheral instance and return the pin assignments."
     )
+    if conflict_hint:
+        user_msg += f"\n\nYour previous assignment conflicted with another feature: {conflict_hint}"
 
     sys_msg = grounded_system_prompt(
         SYSTEM,

@@ -16,7 +16,14 @@ from app.agents.pinout_resolver import resolve_pinout
 from app.agents.requirements_parser import parse_requirements
 from app.agents.supervisor import plan_features
 from app.agents.wokwi_diagram_generator import generate_diagram
-from app.knowledge.graph import DEFAULT_MCU, current_mcu, get_graph, set_target_mcu
+from app.knowledge.graph import (
+    DEFAULT_MCU,
+    PinAssignment,
+    PinConflictError,
+    current_mcu,
+    get_graph,
+    set_target_mcu,
+)
 from app.mcu import McuProfile, get_profile
 from app.schemas.state import (
     AgentName,
@@ -235,6 +242,23 @@ def _feature_to_requirements(feature: FeatureSpec, base: Requirements | None) ->
     )
 
 
+def _feature_send(
+    state: DesignState, feature_id: str, plan: RunPlan | None, pin_conflicts: dict[str, str] | None = None
+) -> Send:
+    return Send(
+        "feature_pipeline",
+        {
+            "session_id": state.session_id,
+            "user_prompt": state.user_prompt,
+            "target_mcu": state.target_mcu,
+            "requirements": state.requirements,
+            "current_feature_id": feature_id,
+            "run_plan": plan,
+            "pin_conflicts": pin_conflicts or {},
+        },
+    )
+
+
 def _route_to_feature_pipelines(state: DesignState):
     """Conditional edge: fan out one Send per feature in the plan.
 
@@ -245,20 +269,7 @@ def _route_to_feature_pipelines(state: DesignState):
 
     plan = state.run_plan
     if plan and plan.features:
-        return [
-            Send(
-                "feature_pipeline",
-                {
-                    "session_id": state.session_id,
-                    "user_prompt": state.user_prompt,
-                    "target_mcu": state.target_mcu,
-                    "requirements": state.requirements,
-                    "current_feature_id": f.id,
-                    "run_plan": plan,
-                },
-            )
-            for f in plan.features
-        ]
+        return [_feature_send(state, f.id, plan) for f in plan.features]
     # Synthetic single feature so the join + downstream stages don't see an empty plan.
     if state.requirements is not None:
         synthetic = FeatureSpec(
@@ -267,19 +278,7 @@ def _route_to_feature_pipelines(state: DesignState):
             device_name=state.requirements.device_name,
             intent=state.requirements.description,
         )
-        return [
-            Send(
-                "feature_pipeline",
-                {
-                    "session_id": state.session_id,
-                    "user_prompt": state.user_prompt,
-                    "target_mcu": state.target_mcu,
-                    "requirements": state.requirements,
-                    "current_feature_id": synthetic.id,
-                    "run_plan": RunPlan(features=[synthetic]),
-                },
-            )
-        ]
+        return [_feature_send(state, synthetic.id, RunPlan(features=[synthetic]))]
     return []
 
 
@@ -319,7 +318,7 @@ async def _node_feature_pipeline(state: DesignState) -> dict:
         f"[{feature.id}] Reading {feature.device_name} datasheet pinout",
         "done",
     )
-    pins_models = await resolve_pinout(requirements)
+    pins_models = await resolve_pinout(requirements, state.pin_conflicts.get(feature.id))
     pin_records: list[PinAssignmentRecord] = []
     for p in pins_models:
         emit(
@@ -449,13 +448,52 @@ async def _node_feature_pipeline(state: DesignState) -> dict:
     }
 
 
+def _find_pin_conflicts(feature_outputs: dict[str, FeatureOutputs]) -> dict[str, str]:
+    """Map each feature whose pins collide with an earlier feature (or itself) to a retry hint.
+
+    Features are checked in sorted id order, so the first feature to claim a pin keeps it.
+    """
+
+    graph = get_graph()
+    claimed: list[PinAssignment] = []
+    conflicts: dict[str, str] = {}
+    for fid in sorted(feature_outputs):
+        mine = [PinAssignment(p.pin_number, p.function.value) for p in feature_outputs[fid].pin_assignments]
+        try:
+            graph.check_pin_conflicts([*claimed, *mine])
+        except PinConflictError as err:
+            taken = ", ".join(str(n) for n in sorted({a.pin_number for a in claimed}))
+            conflicts[fid] = f"{err}. Pins already claimed by other features: {taken or 'none'}. Choose different pins."
+            continue
+        claimed.extend(mine)
+    return conflicts
+
+
 @instrumented("join_features")
 async def _node_join_features(state: DesignState) -> DesignState:
-    """Aggregate all feature_outputs back into the top-level design fields.
+    """Check cross-feature pin conflicts, then aggregate feature_outputs into the top-level design fields.
 
     Runs once after every Send branch from ``_route_to_feature_pipelines``
-    has completed (LangGraph naturally fans in here).
+    has completed (LangGraph naturally fans in here). Conflicting features are
+    re-dispatched once by ``_route_after_join``; a conflict that survives the
+    retry fails the run rather than emitting firmware with a double-assigned pin.
     """
+
+    conflicts = _find_pin_conflicts(state.feature_outputs)
+    if conflicts and state.pin_conflict_retries >= _MAX_PIN_CONFLICT_RETRIES:
+        raise PinConflictError("; ".join(conflicts.values()))
+    state.pin_conflicts = conflicts
+    if conflicts:
+        # Counted here, not in the router: LangGraph drops state changes made inside routers.
+        state.pin_conflict_retries += 1
+        for fid, hint in conflicts.items():
+            _activity(
+                "pinout_resolver",
+                f"pin-conflict-{fid}",
+                f"[{fid}] Pin conflict, re-resolving: {hint[:70]}",
+                "active",
+            )
+        return state
 
     pin_assignments: list[PinAssignmentRecord] = []
     register_writes: list[RegisterWriteRecord] = []
@@ -658,6 +696,15 @@ async def _node_simulate(state: DesignState) -> DesignState:
 
 _MAX_CODE_RETRIES = 1
 _MAX_ERRATA_RETRIES = 1
+_MAX_PIN_CONFLICT_RETRIES = 1
+
+
+def _route_after_join(state: DesignState):
+    """Conditional edge after join: re-dispatch only the conflicting features, else continue."""
+
+    if not state.pin_conflicts:
+        return "clocks"
+    return [_feature_send(state, fid, state.run_plan, {fid: hint}) for fid, hint in state.pin_conflicts.items()]
 
 
 def _route_after_build(state: DesignState):
@@ -774,7 +821,8 @@ def build_pipeline():
     # Fan out: one Send per feature -> feature_pipeline (parallel branches).
     g.add_conditional_edges("requirements", _route_to_feature_pipelines, ["feature_pipeline"])
     g.add_edge("feature_pipeline", "join_features")
-    g.add_edge("join_features", "clocks")
+    # Pin conflict at the join -> re-run just the conflicting features (max 1).
+    g.add_conditional_edges("join_features", _route_after_join, ["feature_pipeline", "clocks"])
     g.add_edge("clocks", "errata")
     # Errata may route back to a fresh fan-out if any warning is `critical`.
     g.add_conditional_edges(

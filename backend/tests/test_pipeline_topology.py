@@ -54,6 +54,12 @@ def test_join_after_feature(graph):
     assert any(e.source == "feature_pipeline" and e.target == "join_features" for e in edges)
 
 
+def test_retry_edge_join_back_to_feature(graph):
+    edges = [e for e in graph.edges if e.source == "join_features" and e.target == "feature_pipeline"]
+    assert edges, "Expected a conditional join_features -> feature_pipeline pin-conflict retry edge"
+    assert any(getattr(e, "conditional", False) for e in edges)
+
+
 def test_retry_edge_build_to_code(graph):
     edges = [e for e in graph.edges if e.source == "build" and e.target == "code"]
     assert edges, "Expected a conditional build -> code retry edge"
